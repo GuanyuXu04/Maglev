@@ -101,16 +101,26 @@ has nonzero DC steady-state error.
 
 ## 2. Implementation
 
+- **Entry point: [`python/run_console.py`](python/run_console.py)** --
+  `cd python && PYTHONPATH=. python run_console.py`. Opens a real-time
+  window running a structural port of the Arduino firmware
+  (`python/maglev_sim/arduino_port.py`) against the true nonlinear plant,
+  paced against your actual clock. Type serial commands (`R 55`, `KP
+  2000`, ...) into the terminal while it runs and watch the response live.
 - [`arduino/maglev_controller/`](arduino/maglev_controller/) -- the
   controller firmware (sensor/actuator access left as stubs).
 - [`python/`](python/) -- nonlinear-plant simulation, a Python mirror of the
   firmware's control algorithm for fast verification without hardware, a
-  serial hardware-in-the-loop harness for verification *with* hardware, and
-  the two sweep experiments (Kp/Kd vs. overshoot/settling time; step size
-  vs. linear-region validity).
+  serial hardware-in-the-loop harness for verification *with* hardware, a
+  real-time console (above), and the two sweep experiments (Kp/Kd vs.
+  overshoot/settling time; step size vs. linear-region validity).
 - [`PARAMETERS.md`](PARAMETERS.md) -- where every numeric constant used
   above comes from (measured, chosen, or derived from one calibration
   measurement) -- start here before touching real hardware. It also
-  documents two things simulation-based verification caught: a sign
-  inconsistency between this README's §1.3 and §1.4, and a control-loop
-  sample-rate requirement driven by the coil's electrical dynamics.
+  documents what simulation-based verification caught: a sign inconsistency
+  between this README's §1.3 and §1.4, a control-loop sample-rate
+  requirement driven by the coil's electrical dynamics, and why a
+  VL53L0X-realistic ~30Hz sensor cannot stabilize this plant at all via
+  direct position-to-voltage PD control at any gain -- which is why the
+  equilibrium gap `y0` is 50mm rather than a tighter value: it's the
+  smallest gap at which a non-expensive 60Hz sensor works instead.

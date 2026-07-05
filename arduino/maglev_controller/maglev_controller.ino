@@ -44,13 +44,18 @@ static const uint8_t PIN_CURR_SENSE = A0;  // LMD18200 current-sense output (377
 // python/tests/test_maglev_sim.py parses this block and checks it against
 // params.py so the two cannot silently drift apart.
 // ---------------------------------------------------------------------------
-static const float G_ACCEL    = 9.81f;      // m/s^2
-static const float MASS_KG    = 0.020f;     // kg      -- PLACEHOLDER, weigh the magnet
-static const float COIL_R_OHM = 8.0f;       // ohm     -- PLACEHOLDER, multimeter reading
-static const float COIL_L_H   = 0.020f;     // H       -- PLACEHOLDER, LR step-response test
-static const float MAG_K      = 4.905e-5f;  // N*m^2/A -- derived, see PARAMETERS.md bucket C
+static const float G_ACCEL    = 9.81f;       // m/s^2
+static const float MASS_KG    = 0.020f;      // kg      -- PLACEHOLDER, weigh the magnet
+static const float COIL_R_OHM = 8.0f;        // ohm     -- PLACEHOLDER, multimeter reading
+static const float COIL_L_H   = 0.020f;      // H       -- PLACEHOLDER, LR step-response test
+static const float MAG_K      = 1.22625e-3f; // N*m^2/A -- derived, see PARAMETERS.md bucket C
 
-static const float Y0_M = 0.010f;  // m, equilibrium gap
+// Y0_M = 50mm, not a tighter gap, is a deliberate choice -- see
+// PARAMETERS.md "Why a 30Hz sensor cannot stabilize this plant". At 10mm no
+// achievable ~30-60Hz sensor rate can stabilize this plant at all, for any
+// gains; 50mm slows the mechanical open-loop instability enough that a
+// 60Hz sensor works with real margin (stable down to ~45Hz).
+static const float Y0_M = 0.050f;  // m, equilibrium gap
 static const float I0_A = 0.400f;  // A, equilibrium coil current
 
 static const float LOOP_DT_S = 0.001f;  // s, 1 kHz control loop tick -- see
@@ -69,8 +74,8 @@ static const float CURRENT_LIMIT_A = 3.0f;   // A, LMD18200 continuous rating (d
 // Recomputed programmatically in python/maglev_sim/linearize.py -- if you
 // change the plant/operating-point constants above, recompute these too
 // (or just retune by hand over serial with the KP/KD commands).
-static float g_kP = 1806.4f;
-static float g_kD = 39.0f;
+static float g_kP = 361.28f;
+static float g_kD = 17.446537f;
 
 // ---------------------------------------------------------------------------
 // Runtime state
@@ -99,15 +104,18 @@ static float g_lastU_V = 0.0f;
 //   // here: if (!sensor.dataReady()) return false;
 //   //       uint16_t mm = sensor.readRangeContinuousMillimeters();
 //   //       if (sensor.timeoutOccurred()) return false;
-//   //       *outMM = (float)mm; return true;
+//   //       *outGapM = (float)mm / 1000.0f; return true;   // mm -> m: every
+//   //       other use of the gap in this file (g_setpoint_m, g_simY_m, the
+//   //       plant constants) is in meters; only the telemetry print
+//   //       multiplies back by 1000 for display. Do NOT store raw mm here.
 // The VL53L0X's continuous-ranging update period (~20-33ms, see
 // PARAMETERS.md "Sample-rate reality check") is much slower than this
 // loop's 1ms tick, so this stub -- and the real implementation -- is
 // expected to report "no new data" on most calls; that's handled correctly
 // by loop() below (it holds the last control output rather than treating
 // it as an error).
-static bool sensorReadGapMM(float *outMM) {
-  (void)outMM;
+static bool sensorReadGapMeters(float *outGapM) {
+  (void)outGapM;
   return false;  // STUB: no sensor wired up yet.
 }
 
@@ -178,7 +186,7 @@ static void resetControllerState() {
 //   U0 <value_volts>  override the equilibrium feedforward voltage
 //   SIM 0|1           disable/enable sensor-injection mode
 //   Y <value_mm>      inject one privileged position sample (SIM mode only)
-//                     -- overrides sensorReadGapMM() for the next control tick
+//                     -- overrides sensorReadGapMeters() for the next control tick
 //   RESET             clear derivative-filter state
 //   PING              replies PONG (link check)
 //
@@ -233,6 +241,7 @@ static void pollSerial() {
 // Setup / loop
 // ---------------------------------------------------------------------------
 static unsigned long g_lastTickMicros = 0;
+static unsigned long g_lastControlMicros = 0;  // last time computeControl() actually ran
 
 void setup() {
   Serial.begin(115200);
@@ -245,6 +254,7 @@ void setup() {
 
   g_lastU_V = g_u0_V;
   g_lastTickMicros = micros();
+  g_lastControlMicros = g_lastTickMicros;
 }
 
 void loop() {
@@ -256,7 +266,6 @@ void loop() {
   if (elapsed < tickMicros) {
     return;  // not time for the next tick yet; keep polling serial in the meantime
   }
-  const float dt = elapsed * 1.0e-6f;
   g_lastTickMicros = nowMicros;
 
   float y_m;
@@ -266,10 +275,21 @@ void loop() {
     y_m = g_simY_m;
     g_haveSimSample = false;  // require a fresh Y each tick, like a real polled sensor
   } else {
-    haveNewSample = sensorReadGapMM(&y_m);
+    haveNewSample = sensorReadGapMeters(&y_m);
   }
 
   if (haveNewSample) {
+    // dt must be time since computeControl() last actually ran, NOT time
+    // since the last 1kHz tick -- when the sensor is slower than the tick
+    // (the normal case, see PARAMETERS.md "Sample-rate reality check"),
+    // those differ by 20-30x, and the derivative filter's Tustin
+    // coefficients are only valid for the interval the (y - y_prev)
+    // difference actually spans. Using the tick interval here would make
+    // the filter massively overestimate velocity (confirmed: ~3-8x at a
+    // 30Hz sensor rate against a 1kHz tick), which was enough to
+    // destabilize the demo gains outright.
+    const float dt = (nowMicros - g_lastControlMicros) * 1.0e-6f;
+    g_lastControlMicros = nowMicros;
     g_lastU_V = computeControl(dt, g_setpoint_m, y_m);
   }
   // else: hold g_lastU_V -- matches the VL53L0X's slower-than-loop update

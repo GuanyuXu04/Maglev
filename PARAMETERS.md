@@ -93,8 +93,8 @@ you've replaced them following the recipe below.**
   *measured* R and L once you have them — if it's not true, the
   second-order model in §1.4 (and everything this repo computes from it) is
   invalid and you'd need to control the third-order plant instead. The
-  nominal values below give `R/L ≈ 400 rad/s` vs `sqrt(b) ≈ 44 rad/s`, a
-  ~9x margin — comfortable, but arbitrary until you check it against reality.
+  nominal values below give `R/L ≈ 400 rad/s` vs `sqrt(b) ≈ 19.8 rad/s`, a
+  ~20x margin — comfortable, but arbitrary until you check it against reality.
 
 ## Bucket B — design choices, not measurements
 
@@ -103,15 +103,21 @@ sample-time choices you get to pick, subject to real constraints:
 
 - **`y0` (equilibrium gap).** Pick a gap that (a) the VL53L0X can read
   reliably and (b) gives you enough clearance for a step without the magnet
-  hitting the coil or drifting out of range. **Caveat worth flagging early:**
-  the VL53L0X's datasheet-rated accuracy degrades noticeably below ~30-50mm,
-  even though it will return *some* number down to near 0mm; a lot of small
-  maglev builds run gaps of 5-15mm anyway and just live with more sensor
-  noise at that range. We nominally pick `y0 = 10mm`, but **you should
-  empirically check the VL53L0X's noise/repeatability at your intended gap
-  before trusting this choice** — if it's too noisy, increasing `y0`
-  directly reduces `b = 2g/y0` (an easier, slower open-loop instability) at
-  the cost of a floppier-looking demo.
+  hitting the coil or drifting out of range. This repo picks **`y0 = 50mm`**
+  — not the original, tighter first guess of 10mm — and the reason is now
+  the *dominant* one, ahead of sensor noise: see "Why a 30Hz sensor cannot
+  stabilize this plant" below. In short, `b = 2g/y0` sets the mechanical
+  open-loop instability's own time constant, and at 10mm that instability
+  is faster than *any* sensor rate achievable without expensive hardware —
+  a hard sampling-rate requirement, not something gain tuning can fix. 50mm
+  is the smallest gap (checked by direct discrete-stability simulation) at
+  which a 60Hz sensor stabilizes this plant with real margin. A pleasant
+  side effect: 50mm is also comfortably at/above the range where VL53L0X
+  accuracy is typically rated good (datasheet accuracy degrades noticeably
+  below ~30-50mm), whereas the original 10mm was deep in the noisy-reading
+  region anyway. **Still empirically check your own sensor's noise at
+  whatever gap you use** — this repo's conclusion is about the *sampling
+  rate* limit, not a claim that 50mm is noise-free on your specific unit.
 - **`i0` (equilibrium current).** Also a choice, constrained by the
   LMD18200's 3A continuous rating and your supply voltage. We pick `i0 =
   0.4A`, deliberately well under the 3A limit, leaving headroom for the ΔI
@@ -175,6 +181,47 @@ This is exactly what Experiment 1 sweeps (over a grid of `zeta, omega_n`,
 reported alongside the resulting `kP, kD`), and what Experiment 2 holds
 fixed at `zeta = 1` while sweeping step size.
 
+## Ground and ceiling travel limits
+
+The simulated plant (`maglev_sim/plant.py`) confines `y` to a physical rail:
+a ground below and the electromagnet's face above, via
+`apply_travel_limits()`/`params.TravelLimits`. This was added after an early
+version of the real-time console let a diverging response reach `y` = tens
+of meters — physically meaningless, since the real magnet would have hit
+something within a few tens of centimeters.
+
+- **`y_max = 0.450 m`** ("ground") — Bucket A: this is a measurement of
+  *your* rig (how far the magnet can fall before hitting the table/base),
+  not a derived quantity. Replace it with whatever your build actually
+  measures.
+- **`y_min = 0.0005 m`** ("ceiling", the electromagnet's face) — Bucket B, a
+  small numerical/design floor, *not* a measurement. `F = K*i/y^2` is
+  undefined at `y=0`; some small minimum gap is also physically realistic
+  (a mechanical spacer or the magnet's own casing would prevent literal
+  contact with the coil). 0.5mm is an arbitrary but reasonable placeholder —
+  tighten or loosen it once you know your rig's actual minimum clearance.
+
+Modeled as a simple inelastic stop: hitting a boundary clamps position and
+zeros only the velocity component driving further into it, so the magnet
+can immediately leave again if the net force reverses (e.g. the controller
+pulls hard enough to overcome gravity right at that position) — see
+`test_magnet_leaves_the_ground_once_it_can`.
+
+**In practice, the ground is effectively one-way with this repo's
+placeholder `K`**: lifting off from `y_max` needs
+`i = m*g*y_max^2/K ≈ 32A` (`F ~ 1/y^2` makes the electromagnet ~81x weaker
+at 450mm than at `y0=50mm`) — about 10.8x the ~3A `CURRENT_LIMIT_A` rating,
+still well out of reach. This matches real intuition: an attractive-type
+maglev that loses its object can't call it back from tens of centimeters
+away; someone has to place it back near `y0` by hand. Don't read the
+ground/ceiling as "a soft safety margin the controller can recover from" —
+reaching either one with realistic actuator limits is, practically,
+terminal for that run. (This margin is *less* extreme than it was at the
+original `y0=10mm` placeholder, where it was ~270x/810A — `K` scales with
+`y0^2` through the equilibrium calibration, so a larger `y0` also means a
+proportionally stronger magnet/coil pairing was needed to hover there in
+the first place.)
+
 ## The nominal placeholder numbers actually in the code
 
 Computed to be internally consistent (equilibrium holds, `R/L >> sqrt(b)`,
@@ -184,17 +231,19 @@ actuator headroom is sane):
 |---|---|---|
 | `g` | 9.81 m/s² | constant |
 | `m` | 0.020 kg | A (placeholder — replace with your scale reading) |
-| `y0` | 0.010 m | B |
+| `y0` | 0.050 m | B — see "Why a 30Hz sensor cannot stabilize this plant" |
 | `i0` | 0.400 A | B |
 | `R` | 8.0 Ω | A (placeholder — replace with multimeter reading) |
 | `L` | 0.020 H | A (placeholder — replace with LR test) |
-| `K` | 4.905e-5 N·m²/A | C, derived: `m*g*y0^2/i0` |
+| `K` | 1.22625e-3 N·m²/A | C, derived: `m*g*y0^2/i0` |
 | `u0` | 3.2 V | derived: `i0*R` |
-| `b` | 1962 s⁻² (`sqrt(b) ≈ 44.3 rad/s`, 7.05 Hz) | derived: `2g/y0` |
+| `b` | 392.4 s⁻² (`sqrt(b) ≈ 19.81 rad/s`, 3.15 Hz) | derived: `2g/y0` |
 | `c'` | 3.0656 | derived: `(g/i0)/R` |
-| `dt` | 1 ms (1 kHz loop tick) | B, forced fast by the electrical-pole-aliasing finding below |
+| `dt` | 1 ms (1 kHz loop tick) | B, see the electrical-pole-aliasing finding below |
 | `tau` | 10 ms | B |
-| demo `kP, kD` | 1806.4, 39.0 (`zeta=1`, `omega_n=1.35*sqrt(b)≈59.8 rad/s`) | D |
+| demo `kP, kD` | 361.28, 17.4465 (`zeta=1`, `omega_n=1.35*sqrt(b)≈26.7 rad/s`) | D |
+| `y_max` ("ground") | 450 mm | A — measure your rig |
+| `y_min` ("ceiling") | 0.5 mm | B — numerical/design floor |
 
 `python/maglev_sim/params.py` is the single source of truth for these
 numbers; `linearize.py` derives `b, c, c'` from them programmatically (never
@@ -243,6 +292,16 @@ gains computed from the §1.4 formulas — the formulas themselves don't know
 about the sampling rate at all, and a design that's fine in continuous time
 can still be unstable once discretized too coarsely.
 
+**Update after moving `y0` to 50mm** (see "Why a 30Hz sensor cannot
+stabilize this plant" below): the specific eigenvalues quoted above were
+computed at the original `y0=10mm` demo gains (`kP=1806.4, kD=39.0`). The
+current demo gains (`kP=361.28, kD=17.45`, gentler because `omega_n` scales
+with the now-smaller `sqrt(b)`) couple much less strongly into the
+electrical state — re-checked directly, the closed loop is now stable even
+at `dt=5ms`, not just `dt=1ms`. `dt=1ms` is kept anyway: it costs the AVR
+nothing and leaves comfortable margin rather than designing exactly to the
+edge of what's needed.
+
 ## Sample-rate reality check (the sensor is a separate, harder limit)
 
 The VL53L0X's default continuous-ranging timing budget is ~33ms (~30Hz), and
@@ -280,16 +339,130 @@ hardware before trusting the demo gains:
    be a natural next step if bench testing shows the electrical dynamics are
    a real problem at your sensor's achieved rate.
 
-If your real sensor rate is on the slow end (~30Hz) and a cascaded loop is
-out of scope, dropping to a lower `omega_n` multiplier (e.g. `1.0x sqrt(b)`
-instead of `1.35x`) is the first, cheapest thing to try — Experiment 1's
-sweep grid deliberately includes this lower-bandwidth region so you can see
-how predicted-vs-actual match degrades as `omega_n` climbs relative to
-whatever sample rate you actually have.
+**Correction, superseded by the finding below:** an earlier version of this
+section suggested dropping to a lower `omega_n` multiplier as "the first,
+cheapest thing to try" if your sensor is slow. That's wrong for a sensor as
+slow as ~30Hz specifically — see "Why a 30Hz sensor cannot stabilize this
+plant" below, which shows the problem at 30Hz isn't gain-dependent at all.
+Experiment 1's sweep grid still correctly shows predicted-vs-actual match
+degrading as `omega_n` climbs *at the 1kHz rate it's run at*; it just isn't
+the relevant knob once your effective sample period is comparable to or
+slower than the plant's own open-loop instability time constant.
 
-`tau = 2*dt` (with the new `dt=1ms`, so `tau=10ms`) is a compromise rather
-than a clean design: the "don't distort the closed loop" guideline wants the
-filter corner (`1/tau`) at least 5-10x above `omega_n`, and `10ms` vs
-`omega_n≈60rad/s` (`1/tau=100rad/s`, only ~1.7x) falls short of that.
-Treat `tau` as a knob to increase first if the D-term looks noisy on
-hardware, and re-check for added lag/overshoot if you do.
+## Why a 30Hz sensor cannot stabilize this plant (found by building the real-time console)
+
+`python/run_console.py` (see its module docstring) runs the ported firmware
+in real time against a *rate-limited* simulated sensor, to match what you'd
+actually see with a VL53L0X wired up. The first time it was run with a
+realistic ~30Hz sensor rate, a plain 2% step diverged explosively — not a
+slow drift, `y` reaching tens of meters within a couple of seconds. Two
+distinct problems were found chasing this down, in order:
+
+1. **A real bug, now fixed**: `computeControl()`'s `dt` argument was being
+   computed as time-since-the-last-1kHz-tick, not time-since-the-last-
+   *actual call to computeControl()*. Those are the same when the sensor is
+   always fresh (true throughout `python/maglev_sim` everywhere else in this
+   repo, and in experiments 1-2, and in the pytest suite — which is why this
+   was never caught before), but when the sensor is slower than the tick
+   (the normal case, see above), they differ by 20-30x. The derivative
+   filter's Tustin coefficients are only valid for the interval the
+   `(y - y_prev)` difference actually spans; using the wrong (much smaller)
+   `dt` made the filter overestimate velocity by roughly that same 20-30x
+   (confirmed directly: a true 0.05 m/s signal was read back as
+   0.16-0.43 m/s). Fixed in both `maglev_controller.ino`
+   (`g_lastControlMicros`, tracked separately from the tick gate
+   `g_lastTickMicros`) and `arduino_port.ArduinoFirmware.loop_tick()`
+   (`_time_since_last_control`, accumulated across ticks with no new
+   sample). `test_firmware_closed_loop_matches_plant_reference_controller`
+   and the always-fresh-sensor test in
+   `test_realtime_console_stable_at_fast_sensor_rate` guard this.
+
+2. **A hard, non-negotiable limit, not a bug**: even after that fix, the
+   demo gains still diverge at a realistic 30Hz sensor rate — and so does
+   *every* gain tried, from the demo point down to essentially zero
+   feedback. Direct discrete forward-simulation (the same method used to
+   find the 1ms requirement above, re-run at `dt=33ms`) shows the closed
+   loop growing by a factor of >800,000 over one second of simulated time,
+   with growth still present at `omega_n` multipliers as low as 0.005.
+   The reason: the plant's *open-loop* instability time constant is
+   `1/sqrt(b) ≈ 22.6ms` **at the original `y0=10mm`** — already faster than
+   one 33ms sample period. A controller that only finds out where the
+   magnet is once every 33ms cannot out-run an instability that doubles
+   roughly every 22.6ms; this is true regardless of how the feedback gain
+   is tuned. Direct forward-simulation puts the actual stability boundary
+   for `y0=10mm` at roughly `dt <= 3-5ms` (>=200-300Hz) — comfortably
+   explaining why the committed 1ms/1kHz tick (chosen earlier for the
+   *electrical*-pole reason above) also happened to be fast enough for
+   *this* reason too, at that `y0`.
+
+**What this means for real hardware:** if your measured `y0` and coil `R,L`
+come out anywhere near the *original* 10mm placeholder, a VL53L0X-class
+~30Hz sensor cannot close this loop by itself, full stop — not "needs
+better tuning." Three real fixes, in rough order of how much they change
+the design (and see "Resolution" immediately below for which one this repo
+actually took, and the numbers behind it):
+- **Increase `y0`.** `b = 2g/y0` shrinks as `y0` grows, slowing the
+  open-loop instability — this is the fix this repo uses.
+- **Cascaded control**: a fast inner loop regulating coil current (via the
+  LMD18200's current-sense pin, sampled fast, independent of the slow
+  position sensor) with a slow outer position loop running at the VL53L0X's
+  native rate. Standard fix for exactly this class of problem; not
+  implemented in this repo's single-loop design (see below for why it turned
+  out not to be the more practical choice here).
+- **A faster position sensor** (analog Hall-effect, laser triangulation)
+  with sub-millisecond latency, replacing the VL53L0X.
+
+### Resolution: `y0` moved to 50mm, sensor rate to 60Hz
+
+The first estimate above ("`y0` on the order of tens of cm") was a rough
+scaling argument, made without actually running the numbers — and it was
+wrong enough to be misleading. Redone properly (same direct discrete
+forward-simulation method, this time scanning `y0` at a fixed sensor `dt`
+instead of scanning `dt` at a fixed `y0`), with a 60Hz sensor rate (chosen
+as "the fastest a VL53L0X-class sensor can plausibly go without moving to
+more expensive hardware," per an explicit project constraint):
+
+| `y0` | single-loop, 60Hz sensor | cascaded control (idealized), 60Hz sensor |
+|---|---|---|
+| 10mm (original) | unstable | unstable |
+| 30mm | unstable | stable |
+| 40mm | stable, but **zero margin** (50Hz already fails catastrophically) | stable |
+| **50mm** | **stable, margin down to ~45Hz** | stable with more margin |
+
+Two things fell out of actually computing this instead of guessing:
+
+1. **Cascaded control does not fix this by itself.** Even with a *perfect,
+   instantaneous* inner current loop (removing the electrical dynamics from
+   consideration entirely), the *mechanical* open-loop instability alone —
+   which depends only on `y0`, not on `R`/`L`/control architecture — is
+   still too fast for a 60Hz sensor below `y0≈15-20mm`. Cascading buys a
+   smaller minimum gap (~16mm vs ~30-40mm) but was not necessary once a
+   modest `y0` increase was on the table anyway, so this repo did not add
+   the extra firmware complexity of an inner current loop.
+2. **The naive threshold has zero safety margin.** `y0=40mm` is technically
+   stable at exactly 60Hz, but 50Hz *already* fails catastrophically there
+   (no gradual degradation) — too fragile against a real sensor's actual
+   achieved rate wandering a bit below its nominal spec. `y0=50mm` stays
+   stable down to ~45Hz, a real margin, for a small additional gap increase.
+
+`y0=50mm` was therefore adopted as the new default throughout this repo
+(`params.py`, the `.ino`, `arduino_port.py`'s demo gains, `run_console.py`'s
+default `--sensor-hz 60`), with `K` and `kP, kD` recomputed from it via the
+same bucket-C/D procedures above — nothing about *how* those values are
+derived changed, only the `y0` input to that derivation.
+
+**Try it yourself**: `python run_console.py` (default: `y0=50mm`, 60Hz
+sensor, stable) vs. `python run_console.py --sensor-hz 30` (reproduces the
+original finding interactively — still unstable at 30Hz even at the new
+`y0`) vs. `--sensor-hz 1000` (idealized fast sensor, matching experiments
+1-2's assumption).
+
+`tau = 10ms` is a compromise rather than a clean design: the "don't distort
+the closed loop" guideline wants the filter corner (`1/tau`) at least
+5-10x above `omega_n`, and `1/tau=100rad/s` vs the current
+`omega_n≈26.7rad/s` (~3.75x) still falls a bit short of that, though it's a
+notably better margin than the ~1.7x this ratio had at the original
+`y0=10mm`/`omega_n≈60rad/s` design point, simply as a side effect of
+`omega_n` scaling down with the smaller `sqrt(b)` at `y0=50mm`. Treat `tau`
+as a knob to increase first if the D-term looks noisy on hardware, and
+re-check for added lag/overshoot if you do.
