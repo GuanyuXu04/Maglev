@@ -98,3 +98,19 @@ ts      ≈ 3 / (zeta*omega_n) = 6 / (c'*kD)      (±5% settling time)
 Both Mp and ts are defined **relative to the final steady-state value of
 y(t)**, not relative to r, because a pure PD controller (no integral term)
 has nonzero DC steady-state error.
+
+## 2. Implementation
+
+- [`arduino/maglev_controller/`](arduino/maglev_controller/) -- the
+  controller firmware (sensor/actuator access left as stubs).
+- [`python/`](python/) -- nonlinear-plant simulation, a Python mirror of the
+  firmware's control algorithm for fast verification without hardware, a
+  serial hardware-in-the-loop harness for verification *with* hardware, and
+  the two sweep experiments (Kp/Kd vs. overshoot/settling time; step size
+  vs. linear-region validity).
+- [`PARAMETERS.md`](PARAMETERS.md) -- where every numeric constant used
+  above comes from (measured, chosen, or derived from one calibration
+  measurement) -- start here before touching real hardware. It also
+  documents two things simulation-based verification caught: a sign
+  inconsistency between this README's §1.3 and §1.4, and a control-loop
+  sample-rate requirement driven by the coil's electrical dynamics.

@@ -1,3 +1,16 @@
 simulink/slprj/
 simulink/*.slxc
 simulink/*_validation.mat
+
+# Local Arduino toolchain (downloaded by the developer, not part of the repo)
+tools/bin/
+tools/arduino-data/
+tools/install-arduino-cli.sh
+arduino/**/build/
+
+# Python
+python/__pycache__/
+python/**/__pycache__/
+python/.pytest_cache/
+python/results/
+*.pyc
