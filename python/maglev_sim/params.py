@@ -22,14 +22,28 @@ class PlantParams:
     m: float = 0.020         # kg -- PLACEHOLDER, replace with a scale reading
     R: float = 8.0           # ohm -- PLACEHOLDER, replace with a multimeter reading
     L: float = 0.020         # H   -- PLACEHOLDER, replace with an LR step-response test
-    K: float = 4.905e-5      # N*m^2/A -- derived, see equilibrium() below
+    K: float = 1.22625e-3    # N*m^2/A -- derived, see equilibrium() below
 
 
 @dataclass(frozen=True)
 class OperatingPoint:
-    """Bucket B design choices: where we linearize around."""
+    """Bucket B design choices: where we linearize around.
 
-    y0: float = 0.010        # m -- equilibrium gap
+    y0=50mm (not a smaller, tighter gap) is a deliberate choice, not
+    arbitrary: see PARAMETERS.md "Why a 30Hz sensor cannot stabilize this
+    plant". At y0=10mm, no achievable ~30-60Hz sensor rate can stabilize
+    this plant at all (the mechanical open-loop instability's own time
+    constant is faster than one sample period), regardless of gains or
+    control architecture. `b = 2g/y0` shrinks as y0 grows, slowing that
+    instability; 50mm is the smallest gap (checked by direct discrete
+    forward-simulation, not asserted) at which a 60Hz sensor is stable with
+    real margin -- down to ~45Hz, not just exactly at 60Hz -- with the
+    existing single-loop design. (40mm technically works at exactly 60Hz
+    too, but with zero margin: 50Hz already fails catastrophically there,
+    too fragile against real sensor-rate variation to commit to.)
+    """
+
+    y0: float = 0.050        # m -- equilibrium gap
     i0: float = 0.400        # A -- equilibrium coil current
 
 
@@ -53,10 +67,25 @@ class ActuatorLimits:
     current_limit: float = 3.0     # A -- LMD18200 continuous rating (datasheet)
 
 
+@dataclass(frozen=True)
+class TravelLimits:
+    """The rig's physical rail: a ground below and the electromagnet's face
+    above, bounding how far the magnet can actually move. Bucket A/B: `y_max`
+    is a measurement (the rail length you build/measure on your rig -- 450mm
+    here); `y_min` is a small design/numerical floor, not a measurement --
+    see PARAMETERS.md "Ground and ceiling travel limits" for why it can't be
+    exactly 0.
+    """
+
+    y_max: float = 0.450    # m -- magnet resting on the ground ("ground")
+    y_min: float = 0.0005   # m -- magnet against the electromagnet's face ("ceiling")
+
+
 PLANT = PlantParams()
 OP = OperatingPoint()
 LOOP = LoopTiming()
 ACTUATOR = ActuatorLimits()
+LIMITS = TravelLimits()
 
 
 def K_from_equilibrium(m: float, g: float, y0: float, i0: float) -> float:

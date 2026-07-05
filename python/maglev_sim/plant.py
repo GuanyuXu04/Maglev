@@ -6,13 +6,20 @@
 
 State vector is [y, y_dot, i]. No linearization here -- this is the ground
 truth the Arduino controller (or its Python mirror) is tested against.
+
+`y` is also confined to a physical rail (a ground below, the electromagnet's
+face above) via `apply_travel_limits()`/`params.LIMITS` -- see
+PARAMETERS.md "Ground and ceiling travel limits". This is what stops a
+divergent response from reaching physically meaningless positions (an
+earlier version of this repo's real-time console let a diverging response
+reach `y` = tens of meters).
 """
 
 from dataclasses import dataclass
 
 import numpy as np
 
-from .params import PlantParams, PLANT
+from .params import PlantParams, TravelLimits, PLANT, LIMITS
 
 
 def dynamics(state: np.ndarray, u: float, plant: PlantParams = PLANT) -> np.ndarray:
@@ -31,8 +38,28 @@ def rk4_step(state: np.ndarray, u: float, dt: float, plant: PlantParams = PLANT)
     return state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
 
+def apply_travel_limits(state: np.ndarray, limits: TravelLimits = LIMITS) -> np.ndarray:
+    """Clamp the magnet to the physical rail (ground below, electromagnet
+    face above) -- see PARAMETERS.md "Ground and ceiling travel limits".
+
+    Modeled as a simple inelastic stop: position is clamped to the boundary
+    and only the velocity component driving it further past the boundary is
+    zeroed, so the magnet can still immediately leave the ground/ceiling
+    again once the net force reverses (e.g. the controller pulls hard enough
+    to lift it off the ground), rather than sticking permanently.
+    """
+    y, y_dot, i = state
+    if y >= limits.y_max:
+        y = limits.y_max
+        y_dot = min(y_dot, 0.0)
+    elif y <= limits.y_min:
+        y = limits.y_min
+        y_dot = max(y_dot, 0.0)
+    return np.array([y, y_dot, i])
+
+
 def integrate(state: np.ndarray, u: float, dt: float, plant: PlantParams = PLANT,
-              substeps: int = 10) -> np.ndarray:
+              substeps: int = 10, limits: TravelLimits = LIMITS) -> np.ndarray:
     """Advance the plant by dt under a zero-order-held input u.
 
     Sub-stepped for accuracy: the electrical time constant L/R (2.5ms for the
@@ -41,10 +68,15 @@ def integrate(state: np.ndarray, u: float, dt: float, plant: PlantParams = PLANT
     same electrical pole -- see PARAMETERS.md "electrical-pole aliasing") --
     a single RK4 step spanning dt would still under-resolve the current
     transient within that tick.
+
+    The travel-limit clamp is applied after every substep (not just once at
+    the end) so a fast fall/rise can't blow through the boundary within a
+    single dt before being caught.
     """
     h = dt / substeps
     for _ in range(substeps):
         state = rk4_step(state, u, h, plant)
+        state = apply_travel_limits(state, limits)
     return state
 
 

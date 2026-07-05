@@ -7,12 +7,43 @@ firmware's algorithm can be verified and tuned before -- or without --
 touching real hardware. See `../PARAMETERS.md` for where every physical
 constant comes from; nothing here is arbitrary.
 
-## Setup
+## Entry point
 
 ```bash
 conda env create -f environment.yml   # or: pip install -r requirements.txt
 conda activate maglev
+cd python
+PYTHONPATH=. python run_console.py
 ```
+
+**`run_console.py`** is the thing to run. It opens a real-time window and
+runs `maglev_sim.arduino_port.ArduinoFirmware` -- a structural port of
+`arduino/maglev_controller/maglev_controller.ino` -- continuously, paced
+against your actual clock, closing the loop against the true nonlinear
+plant. The scene starts with the magnet levitated at rest at the fixed
+equilibrium `params.OP.y0` (50mm). While it runs, type the same serial
+commands you'd send to real hardware into the terminal (`R 55` for a step,
+`KP 2000`, `KD 50`, `RESET`, `PING`, ...) and watch the response live: the
+left panel shows the electromagnet, the moving magnet, and the ground it
+rests on if a step drives it there, all to true scale; the right panel is a
+scrolling, causal-only strip-chart of the measured gap's history (never a
+preview of the future).
+
+Read the module's own docstring before your first run -- it explains an
+important, non-obvious finding that shaped a real design decision here:
+**a realistic ~30Hz VL53L0X-class position sensor cannot stabilize this
+plant at ANY gain, at ANY y0 practical for a desktop rig** -- the
+mechanical open-loop instability itself is faster than a 30Hz sample
+period, full stop (see `../PARAMETERS.md` "Why a 30Hz sensor cannot
+stabilize this plant"). `params.OP.y0` was moved from an original 10mm to
+**50mm** specifically because that's the smallest gap (verified by direct
+discrete-stability simulation, not asserted) at which a 60Hz sensor --
+achievable without expensive hardware -- stabilizes this plant with real
+margin (down to ~45Hz, not just exactly at 60Hz). The console's default
+`--sensor-hz 60` reflects this validated, working configuration out of the
+box; pass `--sensor-hz 1000` for the idealized fast-sensor assumption
+Experiments 1-2 use instead, or `--sensor-hz 30` to reproduce the original
+finding interactively.
 
 ## Layout
 
@@ -34,6 +65,14 @@ conda activate maglev
   filter, same (sign-corrected, see PARAMETERS.md) PD law, same
   feedforward and saturation. This is the "software-in-the-loop" (SIL) half
   of verification -- fast, no hardware needed, exercises the *algorithm*.
+- `maglev_sim/arduino_port.py` -- `ArduinoFirmware`, a *structural* port of
+  the whole `.ino` (not just the control law): the same runtime state, the
+  same serial command vocabulary, the same `loop()` timing, and the same
+  two hardware seams (`set_sensor_provider`/`set_actuator_sink`) the real
+  sensor/actuator stubs expose. Also `SimulatedPeripherals`, which plugs
+  into those seams with a rate-limited simulated sensor and a
+  zero-order-hold actuator, standing in for real hardware. This is what
+  `run_console.py` runs.
 - `maglev_sim/hil_serial.py` -- the "hardware-in-the-loop" (HIL) half: talks
   to a **real** Arduino running the actual compiled `.ino` over serial,
   using its `SIM`/`Y` commands to inject privileged, exact position samples
@@ -43,6 +82,14 @@ conda activate maglev
 - `maglev_sim/metrics.py` -- overshoot/settling-time extraction from a
   step-response trace, using README 1.4's convention (relative to the
   response's own final value, not the reference).
+- `maglev_sim/visualize.py` -- a schematic animation of a
+  `plant.simulate_closed_loop()` result: a fixed electromagnet symbol and a
+  moving N/S bar-magnet symbol (to true relative scale) beside a synced
+  y(t) trace, so you can actually watch a simulated response instead of
+  only reading numbers off a plot. Defaults to ~7x slow motion since this
+  system's dynamics settle in tens of milliseconds. Run
+  `PYTHONPATH=. python -m maglev_sim.visualize` for a ready-made example
+  (writes `results/demo_animation.gif`).
 - `experiments/exp1_gain_sweep.py` -- **Experiment 1**: sweeps
   `(zeta, omega_n)` -> `(kP, kD)` over a grid, applies a small, fixed step,
   and compares simulated overshoot/settling time against the closed-form
