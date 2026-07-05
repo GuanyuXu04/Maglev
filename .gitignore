@@ -1,0 +1,3 @@
+simulink/slprj/
+simulink/*.slxc
+simulink/*_validation.mat
