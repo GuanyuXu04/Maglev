@@ -57,6 +57,7 @@ static const float MAG_K      = 1.22625e-3f; // N*m^2/A -- derived, see PARAMETE
 // achievable ~30-60Hz sensor rate can stabilize this plant at all, for any
 // gains; 50mm slows the mechanical open-loop instability enough that a
 // 60Hz sensor works with real margin (stable down to ~45Hz).
+static float TABLE_TO_COIL_M = 0.450f; // m, calibrated at startup from 500 sensor readings
 static const float Y0_M = 0.050f;  // m, equilibrium gap
 static const float I0_A = 0.400f;  // A, equilibrium coil current
 
@@ -130,7 +131,7 @@ static bool sensorReadGapMeters(float *outGapM) {
   uint16_t mm = sensor.read(false);       // data is ready, so this will not block
   if (sensor.timeoutOccurred()) return false;
 
-  *outGapM = (float)mm / 1000.0f;         // mm -> m
+  *outGapM = TABLE_TO_COIL_M - (float)mm / 1000.0f;  // sensor reads table-to-magnet; convert to coil-to-magnet gap
   return true;
 }
 
@@ -275,6 +276,8 @@ static void pollSerial() {
 // ---------------------------------------------------------------------------
 static unsigned long g_lastTickMicros = 0;
 static unsigned long g_lastControlMicros = 0;  // last time computeControl() actually ran
+static unsigned long g_lastPrintMs = 0;
+static const unsigned long PRINT_INTERVAL_MS = 1000;
 
 void setup() {
   Serial.begin(115200);
@@ -295,10 +298,54 @@ void setup() {
     g_sensorOk = true;
     Serial.println("VL53L1X started.");
   } else {
-    // Do NOT halt on failure: SIM mode (serial-injected Y, see pollSerial())
-    // lets this exact firmware still be driven/verified with no sensor wired.
     g_sensorOk = false;
     Serial.println("WARNING: VL53L1X init failed -- real-sensor mode off (SIM mode still works).");
+  }
+
+  // --- Startup calibration ---
+  if (g_sensorOk) {
+    Serial.println("=== CALIBRATION ===");
+    Serial.println("Clear the space between the sensor and the electromagnet,");
+    Serial.println("then send any character to start calibration.");
+
+    while (Serial.available() > 0) Serial.read();  // flush stale input
+    while (Serial.available() == 0) { /* wait */ }
+    while (Serial.available() > 0) Serial.read();  // consume the trigger
+
+    Serial.println("Collecting 500 samples...");
+
+    static const int CAL_N = 500;
+    int collected = 0;
+    float sum = 0.0f;
+    float sumSq = 0.0f;
+
+    while (collected < CAL_N) {
+      if (!sensor.dataReady()) continue;
+      uint16_t mm = sensor.read(false);
+      if (sensor.timeoutOccurred()) continue;
+      float val = (float)mm;
+      sum   += val;
+      sumSq += val * val;
+      collected++;
+      if (collected % 100 == 0) {
+        Serial.print("  ");
+        Serial.print(collected);
+        Serial.println(" / 500");
+      }
+    }
+
+    float mean_mm = sum / CAL_N;
+    float var     = sumSq / CAL_N - mean_mm * mean_mm;
+    float std_mm  = (var > 0.0f) ? sqrt(var) : 0.0f;
+
+    TABLE_TO_COIL_M = mean_mm / 1000.0f;
+
+    Serial.print("Calibration done: TABLE_TO_COIL = ");
+    Serial.print(mean_mm, 2);
+    Serial.print(" mm  (std = ");
+    Serial.print(std_mm, 2);
+    Serial.println(" mm)");
+    Serial.println("Starting control loop.");
   }
 
   g_lastU_V = g_u0_V;
@@ -346,11 +393,15 @@ void loop() {
 
   actuatorWriteVoltageCommand(g_lastU_V);
 
-  Serial.print(nowMicros / 1000UL);
-  Serial.print(',');
-  Serial.print((haveNewSample ? y_m : g_yPrev_m) * 1000.0f, 4);
-  Serial.print(',');
-  Serial.print(g_yDotFiltPrev * 1000.0f, 4);
-  Serial.print(',');
-  Serial.println(g_lastU_V, 4);
+  const unsigned long nowMs = nowMicros / 1000UL;
+  if (nowMs - g_lastPrintMs >= PRINT_INTERVAL_MS) {
+    g_lastPrintMs = nowMs;
+    Serial.print(nowMs);
+    Serial.print(',');
+    Serial.print((haveNewSample ? y_m : g_yPrev_m) * 1000.0f, 4);
+    Serial.print(',');
+    Serial.print(g_yDotFiltPrev * 1000.0f, 4);
+    Serial.print(',');
+    Serial.println(g_lastU_V, 4);
+  }
 }
