@@ -6,9 +6,9 @@
  * equilibrium (Y0_M, I0_A). See ../../PARAMETERS.md for where every numeric
  * constant below comes from -- none of them are arbitrary.
  *
- * Sensor (VL53L0X) and actuator (LMD18200) hardware access are left as stub
- * functions (see "TODO(hardware)" below) so this sketch can run and be
- * verified against python/maglev_sim before any physical wiring is done.
+ * Sensor (VL53L1X) and actuator (LMD18200) hardware access are implemented
+ * below (non-blocking I2C time-of-flight read; LMD18200 PWM/direction/brake
+ * drive with current-sense fault protection).
  * A runtime "SIM mode" lets a companion computer inject privileged, exact
  * position samples over Serial in place of the real sensor reading -- see
  * the serial protocol comment above pollSerial() -- which is how
@@ -22,6 +22,8 @@
 #include <Arduino.h>
 #include <string.h>
 #include <stdlib.h>
+#include <Wire.h>
+#include <VL53L1X.h>
 
 // ---------------------------------------------------------------------------
 // Hardware pin assignments
@@ -32,7 +34,7 @@ static const uint8_t PIN_COIL_DIR   = 8;   // DIRECTION input on LMD18200 (curre
 static const uint8_t PIN_COIL_BRAKE = 7;   // BRAKE input on LMD18200 (active high); held low to run
 static const uint8_t PIN_CURR_SENSE = A0;  // LMD18200 current-sense output (377uA per A), via sense resistor
 
-// VL53L0X (I2C time-of-flight sensor) uses the default Wire (SDA/SCL) pins;
+// VL53L1X (I2C time-of-flight sensor) uses the default Wire (SDA/SCL) pins;
 // no extra digital pins are needed unless XSHUT is wired for multi-sensor
 // address reassignment (not needed for a single sensor here).
 
@@ -70,6 +72,17 @@ static const float SUPPLY_VOLTAGE  = 12.0f;  // V, assumed bench supply
 static const int   PWM_MAX         = 255;    // 8-bit analogWrite range
 static const float CURRENT_LIMIT_A = 3.0f;   // A, LMD18200 continuous rating (datasheet)
 
+// LMD18200 current sensing: the driver sources 377uA per amp of coil current
+// out of its CURRENT SENSE pin, fed through SENSE_RESISTOR_OHM to GND so
+// PIN_CURR_SENSE reads a proportional voltage. 2.2k keeps the full
+// CURRENT_LIMIT_A safely under the 5V ADC range (3A -> 3*377uA*2.2k ~= 2.49V).
+// These are firmware/wiring details (not plant parameters), so unlike the
+// block above they are not mirrored in params.py -- set them to match your
+// actual sense resistor and board reference.
+static const float SENSE_RESISTOR_OHM = 2200.0f; // ohm, LMD18200 sense pin to GND
+static const float ADC_VREF_V         = 5.0f;    // V, Uno default analog reference
+static const int   ADC_MAX_COUNTS     = 1023;    // 10-bit ADC full scale
+
 // Demo/default gains: zeta=1 (critical damping), omega_n = 1.35*sqrt(b).
 // Recomputed programmatically in python/maglev_sim/linearize.py -- if you
 // change the plant/operating-point constants above, recompute these too
@@ -83,6 +96,7 @@ static float g_kD = 17.446537f;
 static float g_setpoint_m = Y0_M;             // r(t), absolute gap, settable over serial
 static float g_u0_V = I0_A * COIL_R_OHM;      // equilibrium feedforward voltage, settable over serial
 
+static bool  g_sensorOk = false;  // set true once the VL53L1X initializes; gates real-sensor reads
 static bool  g_simMode = false;   // false = read real sensor; true = accept Y injected over serial
 static bool  g_haveSimSample = false;
 static float g_simY_m = Y0_M;
@@ -93,44 +107,63 @@ static float g_yDotFiltPrev = 0.0f;
 static float g_lastU_V = 0.0f;
 
 // ---------------------------------------------------------------------------
-// Sensor stub -- VL53L0X (I2C time-of-flight)
+// Sensor -- VL53L1X (I2C time-of-flight), Pololu library
 // ---------------------------------------------------------------------------
-// TODO(hardware): replace with the Pololu VL53L0X library, e.g.:
-//   #include <Wire.h>
-//   #include <VL53L0X.h>
-//   VL53L0X sensor;
-//   // in setup(): Wire.begin(); sensor.init(); sensor.setTimeout(500);
-//   //             sensor.startContinuous();
-//   // here: if (!sensor.dataReady()) return false;
-//   //       uint16_t mm = sensor.readRangeContinuousMillimeters();
-//   //       if (sensor.timeoutOccurred()) return false;
-//   //       *outGapM = (float)mm / 1000.0f; return true;   // mm -> m: every
-//   //       other use of the gap in this file (g_setpoint_m, g_simY_m, the
-//   //       plant constants) is in meters; only the telemetry print
-//   //       multiplies back by 1000 for display. Do NOT store raw mm here.
-// The VL53L0X's continuous-ranging update period (~20-33ms, see
-// PARAMETERS.md "Sample-rate reality check") is much slower than this
-// loop's 1ms tick, so this stub -- and the real implementation -- is
-// expected to report "no new data" on most calls; that's handled correctly
-// by loop() below (it holds the last control output rather than treating
-// it as an error).
+VL53L1X sensor;
+
+// Non-blocking read: reports a new gap only when the sensor has finished a
+// measurement since the last poll. The continuous-ranging update period
+// (~5ms here, see setup()) is slower than this loop's 1ms tick, so this
+// function is *expected* to report "no new data" on most calls; that's
+// handled correctly by loop() below (it holds the last control output rather
+// than treating it as an error, and tracks g_lastControlMicros separately so
+// the derivative filter's dt reflects real elapsed time -- see PARAMETERS.md
+// "Sample-rate reality check").
+//
+// The library returns millimeters; every other use of the gap in this file
+// (g_setpoint_m, g_simY_m, the plant constants) is in meters, so we convert
+// and store meters here. Only the telemetry print multiplies back by 1000.
 static bool sensorReadGapMeters(float *outGapM) {
-  (void)outGapM;
-  return false;  // STUB: no sensor wired up yet.
+  if (!g_sensorOk)         return false;  // init failed; SIM mode still usable
+  if (!sensor.dataReady()) return false;  // no fresh measurement yet (expected most ticks)
+
+  uint16_t mm = sensor.read(false);       // data is ready, so this will not block
+  if (sensor.timeoutOccurred()) return false;
+
+  *outGapM = (float)mm / 1000.0f;         // mm -> m
+  return true;
 }
 
 // ---------------------------------------------------------------------------
-// Actuator stub -- LMD18200 H-bridge coil driver
+// Actuator -- LMD18200 H-bridge coil driver
 // ---------------------------------------------------------------------------
-// TODO(hardware):
-//   digitalWrite(PIN_COIL_DIR, uVolts >= 0 ? HIGH : LOW);
-//   uint8_t duty = (uint8_t)constrain(fabs(uVolts) / SUPPLY_VOLTAGE * PWM_MAX, 0, PWM_MAX);
-//   analogWrite(PIN_COIL_PWM, duty);
-//   // Fault check: read PIN_CURR_SENSE, convert via the 377uA/A datasheet
-//   // ratio and sense-resistor value, compare against CURRENT_LIMIT_A, and
-//   // command BRAKE/zero duty if exceeded.
+// Maps a signed voltage command to a DIRECTION bit + PWM duty. |uVolts| is
+// scaled against SUPPLY_VOLTAGE so full supply == full duty, and the sign of
+// uVolts picks the current direction (see the control-law sign note above and
+// PARAMETERS.md: if the coil polarity is wired the other way, swap HIGH/LOW
+// here rather than flipping any gains).
+//
+// Cycle-by-cycle overcurrent trip: the LMD18200 sources 377uA per amp of coil
+// current out of its CURRENT SENSE pin, which SENSE_RESISTOR_OHM turns into a
+// voltage on PIN_CURR_SENSE. If the measured coil current exceeds
+// CURRENT_LIMIT_A we assert BRAKE (active-high) and zero the duty for this
+// tick; it is re-evaluated every tick, so the driver releases automatically
+// once the current falls back under the limit.
 static void actuatorWriteVoltageCommand(float uVolts) {
-  (void)uVolts;  // STUB: does not touch real pins yet, safe to call with no hardware attached.
+  const int   raw          = analogRead(PIN_CURR_SENSE);
+  const float senseVolts   = (float)raw / ADC_MAX_COUNTS * ADC_VREF_V;
+  const float coilCurrentA = senseVolts / (377.0e-6f * SENSE_RESISTOR_OHM);
+  if (coilCurrentA > CURRENT_LIMIT_A) {
+    digitalWrite(PIN_COIL_BRAKE, HIGH);  // BRAKE active-high: clamp the coil
+    analogWrite(PIN_COIL_PWM, 0);
+    return;
+  }
+  digitalWrite(PIN_COIL_BRAKE, LOW);     // released -> normal running
+
+  digitalWrite(PIN_COIL_DIR, uVolts >= 0.0f ? HIGH : LOW);
+  const uint8_t duty =
+      (uint8_t)constrain(fabs(uVolts) / SUPPLY_VOLTAGE * PWM_MAX, 0, PWM_MAX);
+  analogWrite(PIN_COIL_PWM, duty);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +282,24 @@ void setup() {
   pinMode(PIN_COIL_DIR, OUTPUT);
   pinMode(PIN_COIL_BRAKE, OUTPUT);
   digitalWrite(PIN_COIL_BRAKE, LOW);
+  analogWrite(PIN_COIL_PWM, 0);   // start with the coil de-energized
 
-  // TODO(hardware): Wire.begin(); VL53L0X init + startContinuous() here.
+  // VL53L1X time-of-flight sensor on the default Wire (SDA/SCL) pins.
+  Wire.begin();
+  Wire.setClock(400000);          // 400 kHz fast-mode I2C
+  sensor.setTimeout(500);
+  if (sensor.init()) {
+    sensor.setDistanceMode(VL53L1X::Short);
+    sensor.setMeasurementTimingBudget(5000);  // 5 ms integration -> low noise, fast
+    sensor.startContinuous(5);                // free-running, new sample ~every 5 ms
+    g_sensorOk = true;
+    Serial.println("VL53L1X started.");
+  } else {
+    // Do NOT halt on failure: SIM mode (serial-injected Y, see pollSerial())
+    // lets this exact firmware still be driven/verified with no sensor wired.
+    g_sensorOk = false;
+    Serial.println("WARNING: VL53L1X init failed -- real-sensor mode off (SIM mode still works).");
+  }
 
   g_lastU_V = g_u0_V;
   g_lastTickMicros = micros();
@@ -292,7 +341,7 @@ void loop() {
     g_lastControlMicros = nowMicros;
     g_lastU_V = computeControl(dt, g_setpoint_m, y_m);
   }
-  // else: hold g_lastU_V -- matches the VL53L0X's slower-than-loop update
+  // else: hold g_lastU_V -- matches the VL53L1X's slower-than-loop update
   // rate, see PARAMETERS.md "Sample-rate reality check".
 
   actuatorWriteVoltageCommand(g_lastU_V);
