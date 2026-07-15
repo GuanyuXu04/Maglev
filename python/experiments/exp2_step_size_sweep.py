@@ -37,7 +37,7 @@ from maglev_sim.reference_controller import ControllerParams, PDController
 RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
 
 ZETA = 1.0
-OMEGA_MULT = 1.35  # matches the .ino's committed demo gains (kP=1806.4, kD=39.0)
+OMEGA_MULT = 1.35  # matches the .ino's committed demo gains (kP=361.28, kD=17.4465)
 STEP_FRACTIONS = [0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80]
 # ts_rel tolerance is looser than it looks like it should need to be: the
 # closed loop here has a lightly-damped residual mode (see PARAMETERS.md,
@@ -52,7 +52,8 @@ TS_REL_TOLERANCE = 0.30   # relative ts deviation from the small-step baseline
 MP_ABS_TOLERANCE = 0.10   # absolute extra overshoot (fraction) beyond the small-step baseline
 
 
-def _is_diverging(y: np.ndarray, y0: float, target: float, step: float) -> bool:
+def _is_diverging(y: np.ndarray, y0: float, target: float, step: float,
+                  y_min: float, y_max: float) -> bool:
     """Physical failure (non-positive/NaN gap) or a growing-not-decaying
     oscillation -- see exp1_gain_sweep._is_diverging for the same idea;
     here the amplitude reference scale is the step itself (which varies
@@ -60,6 +61,14 @@ def _is_diverging(y: np.ndarray, y0: float, target: float, step: float) -> bool:
     """
     if not np.all(np.isfinite(y)):
         return True
+    # Contact with either physical stop is a failed levitation trial.  A
+    # rail-clamped trace becomes flat, so the amplitude-growth test below
+    # cannot detect it by itself (large steps previously appeared to
+    # "recover" after the magnet had simply fallen to y_max).
+    rail_tol = 1e-9 * max(1.0, abs(y_min), abs(y_max))
+    if np.any(y <= y_min + rail_tol) or np.any(y >= y_max - rail_tol):
+        return True
+
     if np.any(y <= 0.1 * y0):
         return True  # gap collapsed toward/through the coil -- unphysical
     half = len(y) // 2
@@ -84,7 +93,9 @@ def run_case(step_fraction: float) -> dict:
     controller = PDController(ControllerParams.from_design(kP, kD))
     result = plant.simulate_closed_loop(controller, plant_params, op, r_fn, t_end, loop.dt)
 
-    diverged = _is_diverging(result.y, op.y0, target, step)
+    diverged = _is_diverging(
+        result.y, op.y0, target, step, params.LIMITS.y_min, params.LIMITS.y_max
+    )
     saturated = bool(np.any(np.abs(result.u) >= params.ACTUATOR.supply_voltage - 1e-6))
 
     if diverged:
