@@ -1,8 +1,21 @@
-"""Nonlinear plant model, exactly as given in README.md section 1.1:
+"""Nonlinear plant model. README.md section 1.1 gives the coil/gravity part:
 
     F(y, i) = K * i / y^2
     m*y_ddot = m*g - F(y, i)
     L*di/dt + R*i = u
+
+plus one effect the README's model leaves out: the levitated permanent
+magnet magnetizes the iron core, producing an *additional* attractive
+(always-upward) force that falls off faster with distance,
+
+    F_pm(y) = K_pm / y^4          (K_pm >= 0, always upward like F)
+    m*y_ddot = m*g - F(y, i) - F_pm(y)
+
+See PARAMETERS.md "Permanent-magnet core-magnetization force" for where
+K_pm comes from and why K is re-derived so (y0, i0) is still an equilibrium.
+The linearized design model in linearize.py / README 1.2 deliberately still
+omits F_pm (as it omits the electrical pole and filter lag) -- this
+nonlinear model is the ground truth that includes it.
 
 State vector is [y, y_dot, i]. No linearization here -- this is the ground
 truth the Arduino controller (or its Python mirror) is tested against.
@@ -24,8 +37,9 @@ from .params import PlantParams, TravelLimits, PLANT, LIMITS
 
 def dynamics(state: np.ndarray, u: float, plant: PlantParams = PLANT) -> np.ndarray:
     y, y_dot, i = state
-    F = plant.K * i / y ** 2
-    y_ddot = plant.g - F / plant.m
+    F = plant.K * i / y ** 2                # coil/electromagnet pull (README 1.1), upward
+    F_pm = plant.K_pm / y ** 4              # permanent magnet magnetizes the core, always upward
+    y_ddot = plant.g - (F + F_pm) / plant.m
     di_dt = (u - plant.R * i) / plant.L
     return np.array([y_dot, y_ddot, di_dt])
 

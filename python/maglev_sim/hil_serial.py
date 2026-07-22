@@ -72,19 +72,28 @@ class ArduinoLink:
     def reset_controller(self) -> None:
         self.send("RESET")
 
-    def step_sim(self, y_mm: float) -> tuple[float, float, float, float]:
+    def step_sim(self, y_mm: float) -> tuple[float, float, float, float, float]:
         """Send one privileged position sample; read back the telemetry line
         the .ino emits for the control tick it triggers.
 
-        Returns (t_ms, y_mm_echoed, ydot_filt_mm_s, u_volts).
+        Returns (t_ms, y_raw_mm, y_filt_mm, ydot_filt_mm_s, u_volts).
+
+        The .ino gained a column when the measurement filter was added: it now
+        reports the raw gap AND the filtered gap the PD actually acted on.
+        y_filt_mm is the more useful of the two here -- comparing it against
+        the y_mm this function injected shows the filter's lag directly, which
+        is the whole reason to run HIL rather than trust the SIL model.
         """
         self.send(f"Y {y_mm}")
         line = self.ser.readline().decode("ascii", errors="replace").strip()
         parts = line.split(",")
-        if len(parts) != 4:
-            raise RuntimeError(f"unexpected telemetry line from Arduino: {line!r}")
-        t_ms, y_mm_echo, ydot, u = (float(p) for p in parts)
-        return t_ms, y_mm_echo, ydot, u
+        if len(parts) != 5:
+            raise RuntimeError(
+                f"unexpected telemetry line from Arduino (expected 5 fields "
+                f"t_ms,y_raw_mm,y_filt_mm,ydot_mm_s,u_V): {line!r}"
+            )
+        t_ms, y_raw_mm, y_filt_mm, ydot, u = (float(p) for p in parts)
+        return t_ms, y_raw_mm, y_filt_mm, ydot, u
 
     def close(self) -> None:
         self.ser.close()
@@ -120,7 +129,7 @@ def run_hil_step_response(port: str, kP: float, kD: float, step_size_m: float,
     try:
         while t_accum < duration_s:
             y_mm = state[0] * 1000.0
-            t_ms, _, _, u = link.step_sim(y_mm)
+            t_ms, _, _, _, u = link.step_sim(y_mm)
             dt = 0.001 if t_prev_ms is None else max((t_ms - t_prev_ms) / 1000.0, 1e-6)
             t_prev_ms = t_ms
 

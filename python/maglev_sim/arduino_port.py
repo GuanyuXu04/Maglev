@@ -44,8 +44,27 @@ from .reference_controller import ControllerParams, PDController
 # from the same design point; test_ino_default_gains_match_demo_design_point
 # checks the .ino side against linearize.py). Recomputed for y0=50mm -- see
 # PARAMETERS.md "Why a 30Hz sensor cannot stabilize this plant".
-_DEFAULT_KP = 361.28
-_DEFAULT_KD = 17.446536945083025
+_DEFAULT_KP = 1018.7
+_DEFAULT_KD = 43.9554
+
+# --- mirrors of the .ino's sensor-filtering constants ---------------------
+# Ported alongside the .ino's measurement filter. These are firmware
+# behaviour, not plant parameters, so they live here rather than in
+# params.py -- but they MUST match the .ino, or this class stops being a
+# faithful port and the HIL comparison becomes meaningless.
+_TAU_MEAS_S = 0.005                 # TAU_MEAS_S
+_Y_VALID_MIN_M = 0.005              # Y_VALID_MIN_M
+_Y_VALID_MAX_M = 0.200              # Y_VALID_MAX_M
+_MAX_CONSECUTIVE_BAD_SAMPLES = 10   # MAX_CONSECUTIVE_BAD_SAMPLES
+_DT_CLAMP_MAX_S = 0.20              # the .ino's dt sanity clamp threshold
+
+# Mirrors the .ino's SAMPLE_NONE / SAMPLE_OK / SAMPLE_BAD tri-state. The
+# distinction matters: "no new sample this tick" is the normal case and must
+# hold the last output, whereas "fresh but invalid" has to be counted so a
+# permanently blinded sensor cannot masquerade as a healthy slow one.
+SAMPLE_NONE = 0
+SAMPLE_OK = 1
+SAMPLE_BAD = -1
 
 
 class ArduinoFirmware:
@@ -77,6 +96,11 @@ class ArduinoFirmware:
         self._actuator_sink: Optional[Callable[[float], None]] = None
         self._time_since_last_control = 0.0  # accumulates over ticks with no new sample
 
+        # --- mirrors g_haveYFilt / g_yFilt_m / g_badSampleCount ---
+        self._have_y_filt = False
+        self._y_filt_m = op.y0
+        self._bad_sample_count = 0
+
     # -- hardware seams: mirror the .ino's TODO(hardware) stub bodies -----
     def set_sensor_provider(self, fn: Callable[[], Optional[float]]) -> None:
         """fn() -> gap in meters, or None for "no new sample" (mirrors the
@@ -93,10 +117,40 @@ class ArduinoFirmware:
         """
         self._actuator_sink = fn
 
-    def sensor_read_gap_meters(self) -> Optional[float]:
+    def sensor_read_gap_meters(self) -> tuple[int, float]:
+        """Mirrors the .ino's sensorReadGapMeters(): returns
+        (status, gap_m) where status is SAMPLE_NONE / SAMPLE_OK / SAMPLE_BAD.
+
+        The provider contract is unchanged (None == "no new sample"); the
+        validity gate is applied here, on the value the provider returns, so
+        that the .ino's Y_VALID_MIN_M/Y_VALID_MAX_M check has an exact
+        counterpart. A provider may also return a NaN/out-of-range value to
+        simulate a VL53L1X that has lost the target.
+        """
         if self._sensor_provider is None:
-            return None
-        return self._sensor_provider()
+            return SAMPLE_NONE, self._y_filt_m
+        y = self._sensor_provider()
+        if y is None:
+            return SAMPLE_NONE, self._y_filt_m
+        if not (_Y_VALID_MIN_M <= y <= _Y_VALID_MAX_M):
+            return SAMPLE_BAD, self._y_filt_m
+        return SAMPLE_OK, y
+
+    def filter_measurement(self, dt: float, y_raw: float) -> float:
+        """Mirrors the .ino's filterMeasurement(): first-order low-pass on
+        the position measurement, with alpha derived from the *actual*
+        elapsed dt so the corner frequency does not move with the sample
+        rate. The .ino's second EMA-on-velocity is deliberately absent in
+        both places -- PDController already low-passes the derivative with
+        the Tustin-discretized s/(tau*s+1).
+        """
+        if not self._have_y_filt:
+            self._y_filt_m = y_raw
+            self._have_y_filt = True
+            return self._y_filt_m
+        alpha = dt / (_TAU_MEAS_S + dt)
+        self._y_filt_m += alpha * (y_raw - self._y_filt_m)
+        return self._y_filt_m
 
     def actuator_write_voltage_command(self, u_volts: float) -> None:
         if self._actuator_sink is not None:
@@ -133,6 +187,8 @@ class ArduinoFirmware:
                 self._have_sim_sample = True
             elif cmd == "RESET":
                 self._controller.reset()
+                self._have_y_filt = False      # re-seed from the next sample
+                self._bad_sample_count = 0
             elif cmd == "PING":
                 return "PONG"
             else:
@@ -151,15 +207,16 @@ class ArduinoFirmware:
         the last call to loop_tick), NOT necessarily the interval passed to
         the controller -- see below.
 
-        Returns (have_new_sample, u_volts_commanded).
+        Returns (have_new_sample, u_volts_commanded), where have_new_sample
+        is True only for SAMPLE_OK -- a rejected sample reports False, like
+        the "no data" case, because in both the controller did not run.
         """
         if self.sim_mode:
-            have_new_sample = self._have_sim_sample
+            status = SAMPLE_OK if self._have_sim_sample else SAMPLE_NONE
             y_m = self._sim_y_m
             self._have_sim_sample = False
         else:
-            y_m = self.sensor_read_gap_meters()
-            have_new_sample = y_m is not None
+            status, y_m = self.sensor_read_gap_meters()
 
         # The controller must see the time since it last actually ran, not
         # the tick interval -- when the sensor is slower than the tick (the
@@ -169,14 +226,34 @@ class ArduinoFirmware:
         # actually spans. Passing the tick interval instead made the filter
         # massively overestimate velocity (confirmed: ~3-8x at a 30Hz sensor
         # rate against a 1kHz tick) -- enough to destabilize the demo gains
-        # outright. This mirrors the .ino's g_lastControlMicros fix.
+        # outright. This mirrors the .ino's g_lastControlMicros fix. The
+        # measurement filter's alpha is derived from the same dt.
         self._time_since_last_control += dt
-        if have_new_sample:
-            self.last_u_V = self._controller.update(self._time_since_last_control, self.setpoint_m, y_m)
-            self._time_since_last_control = 0.0
-        # else: hold self.last_u_V -- matches the VL53L0X's slower-than-loop
-        # update rate, see PARAMETERS.md "Sample-rate reality check".
 
+        if status == SAMPLE_BAD:
+            # Transient dropout: skip the sample, hold the last output. Only
+            # a sustained dropout is a fault -- this plant diverges in ~45ms,
+            # so de-energizing on a single bad reading is a self-inflicted
+            # crash. Mirrors the .ino exactly.
+            if self._bad_sample_count < _MAX_CONSECUTIVE_BAD_SAMPLES:
+                self._bad_sample_count += 1
+            if self._bad_sample_count >= _MAX_CONSECUTIVE_BAD_SAMPLES:
+                self._controller.reset()
+                self._have_y_filt = False
+                self._bad_sample_count = 0
+                self.last_u_V = 0.0    # de-energize
+        elif status == SAMPLE_OK:
+            self._bad_sample_count = 0
+            control_dt = self._time_since_last_control
+            if control_dt <= 0.0 or control_dt > _DT_CLAMP_MAX_S:
+                control_dt = self.loop_cfg.dt      # the .ino's dt sanity clamp
+            y_filtered = self.filter_measurement(control_dt, y_m)
+            self.last_u_V = self._controller.update(control_dt, self.setpoint_m, y_filtered)
+            self._time_since_last_control = 0.0
+        # else (SAMPLE_NONE): hold self.last_u_V -- matches the VL53L1X's
+        # slower-than-loop update rate, see PARAMETERS.md.
+
+        have_new_sample = status == SAMPLE_OK
         self.actuator_write_voltage_command(self.last_u_V)
         return have_new_sample, self.last_u_V
 

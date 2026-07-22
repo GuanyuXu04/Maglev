@@ -21,6 +21,12 @@ class LinearCoeffs:
 
 
 def linear_coeffs(plant: PlantParams = PLANT, op: OperatingPoint = OP) -> LinearCoeffs:
+    # b = 2g/y0 is README 1.2's design-model instability rate. It intentionally
+    # does NOT include the permanent-magnet core-magnetization term the
+    # nonlinear plant (plant.py) now carries -- that term steepens the true
+    # open-loop instability to 2(g + K_pm/(m*y0**4))/y0, a deliberately-
+    # unmodeled effect the controller must be robust to, exactly like the
+    # neglected electrical pole and derivative-filter lag. See PARAMETERS.md.
     b = 2.0 * plant.g / op.y0
     c = plant.g / op.i0
     c_prime = c / plant.R

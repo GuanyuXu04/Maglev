@@ -7,6 +7,7 @@ Run with: pytest python/tests
 
 import math
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib
@@ -27,8 +28,35 @@ def test_equilibrium_consistency():
 
 
 def test_K_matches_equilibrium_derivation():
-    K = params.K_from_equilibrium(params.PLANT.m, params.PLANT.g, params.OP.y0, params.OP.i0)
+    K = params.K_from_equilibrium(params.PLANT.m, params.PLANT.g, params.OP.y0,
+                                  params.OP.i0, params.PLANT.K_pm)
     assert K == pytest.approx(params.PLANT.K, rel=1e-9)
+
+
+def test_permanent_magnet_core_force_is_upward_and_inverse_quartic():
+    """The added permanent-magnet-magnetizes-the-core term F_pm = K_pm/y^4 must
+    always push the magnet UP (reduce y_ddot, since +y_ddot = growing gap) and
+    scale as 1/y^4. Checked by differencing the nonlinear dynamics against a
+    coil-only (K_pm=0) plant at fixed (i, u)."""
+    pp = params.PLANT
+    coil_only = replace(pp, K_pm=0.0)
+    for y in (0.03, 0.05, 0.08):
+        state = np.array([y, 0.0, params.OP.i0])
+        a_full = plant.dynamics(state, 0.0, pp)[1]
+        a_coil = plant.dynamics(state, 0.0, coil_only)[1]
+        delta = a_coil - a_full  # extra upward (negative-y_ddot) accel from F_pm
+        assert delta > 0.0
+        assert delta == pytest.approx(pp.K_pm / (pp.m * y ** 4), rel=1e-12)
+
+
+def test_operating_point_is_still_equilibrium_with_core_force():
+    """Re-deriving K for the K_pm term must keep (y0, i0, u0) a true fixed point
+    of the *nonlinear* plant: zero acceleration and zero di/dt there."""
+    op, pp = params.OP, params.PLANT
+    u0 = params.u0_from_equilibrium(op.i0, pp.R)
+    d = plant.dynamics(np.array([op.y0, 0.0, op.i0]), u0, pp)
+    assert d[1] == pytest.approx(0.0, abs=1e-9)  # y_ddot ~ 0
+    assert d[2] == pytest.approx(0.0, abs=1e-9)  # di_dt ~ 0
 
 
 def test_electrical_pole_much_faster_than_mechanical():
@@ -152,7 +180,16 @@ def test_reference_controller_matches_ideal_linear_model_in_the_fast_filter_limi
     theory" -- the latter is answered (with a documented, expected gap) by
     test_closed_loop_stays_bounded_and_qualitatively_correct below.
     """
-    op, plant_params = params.OP, params.PLANT
+    op = params.OP
+    # Isolate the *algorithm* from every deliberately-unmodeled plant effect,
+    # not just the filter lag: use a coil-only plant (K_pm=0, K re-derived for
+    # the coil alone) so the nonlinear plant's linearization is exactly README
+    # 1.2's b=2g/y0 that simulate_ideal_linear_response assumes. The committed
+    # params.PLANT's permanent-magnet core-magnetization term (F_pm=K_pm/y^4)
+    # is, like L and tau, a modeled reality the controller must merely tolerate
+    # -- that robustness is what the Tier-2 test below checks, not this one.
+    coil_only_K = params.K_from_equilibrium(params.PLANT.m, params.PLANT.g, op.y0, op.i0, 0.0)
+    plant_params = replace(params.PLANT, K=coil_only_K, K_pm=0.0)
     omega_n = mult * linearize.open_loop_pole()
     kP, kD = linearize.kp_kd_from_zeta_omega(zeta, omega_n)
 
@@ -240,12 +277,14 @@ def test_ino_constants_match_params_py():
     text = INO_PATH.read_text()
     ino = _parse_ino_constants(text)
 
+    # G_ACCEL, MASS_KG, COIL_L_H, MAG_K and MAG_K_PM used to be checked here.
+    # They were removed from the .ino because the control law never read them
+    # -- they were duplicated plant constants that only the simulation uses.
+    # Keeping them in the .ino purely to satisfy this test would be the tail
+    # wagging the dog: the test exists to stop numbers drifting, not to force
+    # the firmware to carry dead weight.
     expected = {
-        "G_ACCEL": params.PLANT.g,
-        "MASS_KG": params.PLANT.m,
         "COIL_R_OHM": params.PLANT.R,
-        "COIL_L_H": params.PLANT.L,
-        "MAG_K": params.PLANT.K,
         "Y0_M": params.OP.y0,
         "I0_A": params.OP.i0,
         "LOOP_DT_S": params.LOOP.dt,

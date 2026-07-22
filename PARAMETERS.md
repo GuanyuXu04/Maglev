@@ -143,6 +143,13 @@ equilibrium condition itself as the calibration:
 m*g = K*i0/y0^2   =>   K = m*g*y0^2 / i0
 ```
 
+(This is the coil-only balance. This repo's plant also carries a
+permanent-magnet-on-core term `K_pm/y^4`, so the committed `K` is derived from
+the two-term balance `m*g = K*i0/y0^2 + K_pm/y0^4` instead — see
+"Permanent-magnet core-magnetization force" above. The procedure below is
+unchanged; only the algebra that turns the calibration into `K` gains the
+`− K_pm/y0^4` term.)
+
 Procedure once you have `m` (bucket A) and have picked `y0` (bucket B):
 
 1. Start with deliberately conservative, hand-picked gains (small `kP`, `kD
@@ -180,6 +187,47 @@ kD = 2*zeta*omega_n / c'
 This is exactly what Experiment 1 sweeps (over a grid of `zeta, omega_n`,
 reported alongside the resulting `kP, kD`), and what Experiment 2 holds
 fixed at `zeta = 1` while sweeping step size.
+
+## Permanent-magnet core-magnetization force (an effect beyond README §1.1)
+
+README §1.1's plant keeps only the coil's `F = K*i/y^2` pull. A real
+attractive-type rig has a second, always-upward force the README omits: the
+levitated permanent magnet magnetizes the electromagnet's iron core, and is
+then attracted to the magnetization it induced. This "suck-in" force points
+up the whole time (it does not reverse with coil-current sign) and falls off
+faster with distance than the coil term; this repo models it as
+
+```
+F_pm(y) = K_pm / y^4          (always upward, K_pm >= 0)
+```
+
+so the nonlinear plant (`maglev_sim/plant.py`) is now
+`m*y_ddot = m*g - K*i/y^2 - K_pm/y^4`.
+
+- **`K_pm` (bucket B/C — a design-choice magnitude, then folded into the
+  calibration).** There is no first-principles value for `K_pm` any more than
+  for `K`; on real hardware it would fall out of the same hover calibration.
+  Here it is a placeholder chosen so the core term supplies **5% of the weight
+  at the operating point**: `K_pm = 0.05 * m*g * y0^4 = 6.13125e-8 N·m⁴`.
+- **Why `K` changed from 1.22625e-3 to 1.1649375e-3.** The hover force balance
+  is now shared between the two upward terms,
+  `m*g = K*i0/y0^2 + K_pm/y0^4`, so the coil's share is `m*g − K_pm/y0^4` and
+  `K = (m*g − K_pm/y0^4)*y0^2/i0` (`params.K_from_equilibrium(..., K_pm)`).
+  With the 5% split, `K` drops to 95% of its coil-only value. `(y0, i0, u0)`
+  is therefore still an *exact* equilibrium of the full nonlinear plant —
+  `run_console.py` still starts at rest at `y0`, and
+  `check_equilibrium_consistency()` now checks this two-term balance. `MAG_K`
+  in the `.ino` was updated to match (it is a plant constant the control law
+  never reads), and a companion `MAG_K_PM` constant was added there for the
+  same params-sync bookkeeping.
+- **The controller was NOT redesigned for it.** The linearized design model
+  (README §1.2 / `linearize.py`) still uses `b = 2g/y0` and the same demo
+  `kP, kD`. Including `F_pm` would steepen the true open-loop instability to
+  `b_true = 2(g + K_pm/(m*y0^4))/y0` (~5% larger here), so `F_pm` is a
+  deliberately-unmodeled effect the existing controller must simply be robust
+  to — exactly like the neglected electrical pole and derivative-filter lag.
+  Its influence is confined to transients and off-`y0` excursions (the two
+  upward terms have different `y`-profiles), not to the resting hover point.
 
 ## Ground and ceiling travel limits
 
@@ -235,7 +283,8 @@ actuator headroom is sane):
 | `i0` | 0.400 A | B |
 | `R` | 8.0 Ω | A (placeholder — replace with multimeter reading) |
 | `L` | 0.020 H | A (placeholder — replace with LR test) |
-| `K` | 1.22625e-3 N·m²/A | C, derived: `m*g*y0^2/i0` |
+| `K` | 1.1649375e-3 N·m²/A | C, derived: `(m*g − K_pm/y0^4)*y0^2/i0` |
+| `K_pm` | 6.13125e-8 N·m⁴ | B/C, design: PM-on-core pull, 5% of hover force (see above) |
 | `u0` | 3.2 V | derived: `i0*R` |
 | `b` | 392.4 s⁻² (`sqrt(b) ≈ 19.81 rad/s`, 3.15 Hz) | derived: `2g/y0` |
 | `c'` | 3.0656 | derived: `(g/i0)/R` |

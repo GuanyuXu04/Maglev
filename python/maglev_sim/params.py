@@ -3,7 +3,10 @@
 See ../../PARAMETERS.md for the full discussion of where each number comes
 from (direct measurement, design choice, or derived via calibration). Every
 number here is a *placeholder* self-consistent with the equilibrium
-equation `m*g = K*i0/y0**2` -- not a claim about any real hardware.
+equation `m*g = K*i0/y0**2 + K_pm/y0**4` (the second term is the
+permanent-magnet-on-core attraction added to the plant model -- see
+PARAMETERS.md "Permanent-magnet core-magnetization force") -- not a claim
+about any real hardware.
 
 The Arduino sketch (arduino/maglev_controller/maglev_controller.ino) hardcodes
 the same numeric values in its constants block. `tests/test_maglev_sim.py`
@@ -22,7 +25,12 @@ class PlantParams:
     m: float = 0.020         # kg -- PLACEHOLDER, replace with a scale reading
     R: float = 8.0           # ohm -- PLACEHOLDER, replace with a multimeter reading
     L: float = 0.020         # H   -- PLACEHOLDER, replace with an LR step-response test
-    K: float = 1.22625e-3    # N*m^2/A -- derived, see equilibrium() below
+    K: float = 1.1649375e-3  # N*m^2/A -- coil constant, derived via K_from_equilibrium()
+                             # so the coil AND K_pm together satisfy equilibrium (below)
+    K_pm: float = 6.13125e-8 # N*m^4 -- permanent-magnet-magnetizes-the-core attraction,
+                             # F_pm = K_pm/y^4, always upward. PLACEHOLDER: chosen so this
+                             # term supplies 5% of the hover force at (y0, i0). See
+                             # PARAMETERS.md "Permanent-magnet core-magnetization force".
 
 
 @dataclass(frozen=True)
@@ -88,9 +96,15 @@ ACTUATOR = ActuatorLimits()
 LIMITS = TravelLimits()
 
 
-def K_from_equilibrium(m: float, g: float, y0: float, i0: float) -> float:
-    """K derived from a single hovering calibration point (PARAMETERS.md, bucket C)."""
-    return m * g * y0 ** 2 / i0
+def K_from_equilibrium(m: float, g: float, y0: float, i0: float, K_pm: float = 0.0) -> float:
+    """K derived from a single hovering calibration point (PARAMETERS.md, bucket C).
+
+    With the permanent-magnet core-magnetization term F_pm = K_pm/y0**4 (always
+    upward) also present, the hover force balance is
+    `m*g = K*i0/y0**2 + K_pm/y0**4`, so the coil's share is `m*g - K_pm/y0**4`.
+    K_pm defaults to 0.0 (the original README coil-only model).
+    """
+    return (m * g - K_pm / y0 ** 4) * y0 ** 2 / i0
 
 
 def u0_from_equilibrium(i0: float, R: float) -> float:
@@ -100,17 +114,20 @@ def u0_from_equilibrium(i0: float, R: float) -> float:
 
 def check_equilibrium_consistency(plant: PlantParams = PLANT, op: OperatingPoint = OP,
                                    rtol: float = 1e-9) -> None:
-    """Raise if the committed placeholder numbers don't actually satisfy m*g = K*i0/y0**2.
+    """Raise if the committed placeholder numbers don't satisfy the hover force
+    balance `m*g = K*i0/y0**2 + K_pm/y0**4` (coil pull + permanent-magnet
+    core-magnetization pull, both upward).
 
     This is a guard against editing one placeholder number without the others --
     the whole point of the "self-consistent fictional data sheet" is that it
     stays consistent.
     """
     lhs = plant.m * plant.g
-    rhs = plant.K * op.i0 / op.y0 ** 2
+    rhs = plant.K * op.i0 / op.y0 ** 2 + plant.K_pm / op.y0 ** 4
     if abs(lhs - rhs) > rtol * max(abs(lhs), abs(rhs), 1e-12):
         raise ValueError(
-            f"Equilibrium violated: m*g={lhs:.6e} but K*i0/y0**2={rhs:.6e}. "
-            "Either recompute K via K_from_equilibrium(), or fix whichever "
+            f"Equilibrium violated: m*g={lhs:.6e} but "
+            f"K*i0/y0**2 + K_pm/y0**4={rhs:.6e}. Either recompute K via "
+            "K_from_equilibrium(m, g, y0, i0, K_pm), or fix whichever "
             "placeholder changed."
         )

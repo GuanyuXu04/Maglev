@@ -2,11 +2,11 @@
 
 The gains are computed once from the ideal linearized plant at zeta=1.  The
 nonlinear simulation then sweeps positive step amplitudes in millimetres.
-It scans 15-25 mm in uniform 0.05 mm increments.  Three figures are produced:
+It scans 10-22 mm in uniform 0.05 mm increments.  Three figures are produced:
 
 1. measured settling time versus step amplitude, with the exact ideal-linear
-   settling time as a dashed baseline and unstable cases marked by crosses;
-2. representative trajectories at 17, 21, and 25 mm;
+   settling time as a dashed baseline and unstable cases shown as a shaded region;
+2. representative normalized trajectories at 12, 19, and 22 mm;
 3. nonlinear and ideal-linear steady-state tracking errors.
 
 Run:  cd python && PYTHONPATH=. python experiments/exp3_critical_step_response.py
@@ -33,7 +33,15 @@ RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
 
 ZETA = 1.0
 OMEGA_MULT = 1.35
-STEP_AMPLITUDES_MM = np.round(np.arange(15.0, 25.0 + 1e-9, 0.05), 2)
+STEP_AMPLITUDES_MM = np.round(np.arange(10.0, 22.0 + 1e-9, 0.05), 2)
+PLOT_STEP_MIN_MM = 14.0
+PLOT_STEP_MAX_MM = 22.0
+REPRESENTATIVE_STEPS_MM = (12.0, 19.0, 22.0)
+REPRESENTATIVE_Y_LIM = (-0.15, 2.8)
+TITLE_FONTSIZE = 18
+LABEL_FONTSIZE = 16
+TICK_FONTSIZE = 15
+LEGEND_FONTSIZE = 14
 STEP_TIME_S = 0.05
 POST_STEP_DURATION_S = 2.0
 SETTLING_BAND = 0.05
@@ -81,6 +89,10 @@ def ideal_steady_state_error_mm(step_mm: float) -> float:
     _, kP, _ = design()
     dc_gain = coeffs.c_prime * kP / (coeffs.c_prime * kP - coeffs.b)
     return abs(dc_gain - 1.0) * step_mm
+
+
+def _style_axes(ax: plt.Axes) -> None:
+    ax.tick_params(axis="both", labelsize=TICK_FONTSIZE)
 
 
 def _failure_reason(y: np.ndarray, target: float, step: float) -> str:
@@ -161,7 +173,7 @@ def _first_unstable(cases: list[Case]) -> Case:
 
 
 def sweep() -> tuple[list[Case], float]:
-    """Run the requested uniform 15-25 mm sweep at 0.05 mm spacing."""
+    """Run the requested uniform sweep at 0.05 mm spacing."""
     cases = [run_case(float(step)) for step in STEP_AMPLITUDES_MM]
     boundary = _first_unstable(cases).step_mm
     return cases, boundary
@@ -169,7 +181,7 @@ def sweep() -> tuple[list[Case], float]:
 
 def choose_representatives(cases: list[Case]) -> tuple[Case, Case, Case]:
     by_step = {round(case.step_mm, 2): case for case in cases}
-    requested = (17.0, 21.0, 25.0)
+    requested = REPRESENTATIVE_STEPS_MM
     missing = [step for step in requested if step not in by_step]
     if missing:
         raise RuntimeError(f"Representative amplitudes missing from sweep: {missing}")
@@ -223,31 +235,29 @@ def plot_settling(cases: list[Case], ideal_ts: float, boundary: float) -> Path:
     stable = [case for case in cases if not case.unstable]
     stable_x = np.array([case.step_mm for case in stable])
     stable_y = 1000.0 * np.array([case.settling_time_s for case in stable])
+    baseline_ms = 1000.0 * ideal_ts
 
     smooth_x = np.linspace(float(stable_x[0]), float(stable_x[-1]), 800)
     smooth_y = PchipInterpolator(stable_x, stable_y)(smooth_x)
 
-    fig, ax = plt.subplots(figsize=(8.2, 4.8))
+    fig, ax = plt.subplots(figsize=(8.0, 6.0))
     ax.plot(smooth_x, smooth_y, color="tab:blue", lw=2.0,
             label="Nonlinear simulation")
-    ax.axhline(1000.0 * ideal_ts, color="black", ls="--", lw=1.6,
-               label=f"Ideal reduced-order linear plant: {1000.0 * ideal_ts:.1f} ms")
-    ax.axvspan(boundary, 25.0, color="red", alpha=0.10,
-               label="Unstable: no finite settling time")
-    ax.axvline(boundary, color="red", ls=":", lw=1.2)
-    ax.annotate(
-        f"first unstable case: {boundary:.2f} mm",
-        xy=(boundary, 198.0), xytext=(boundary + 0.12, 198.0),
-        fontsize=9, color="darkred", ha="left", va="top",
-    )
+    ax.axhline(baseline_ms, color="black", ls="--", lw=1.6,
+               label=f"Ideal reduced-order linear plant: {baseline_ms:.1f} ms")
+    if boundary < PLOT_STEP_MAX_MM:
+        ax.axvspan(boundary, PLOT_STEP_MAX_MM, color="red", alpha=0.10,
+                   label="Unstable: no finite settling time")
+        ax.axvline(boundary, color="red", ls=":", lw=1.2)
 
-    ax.set_xlabel("Step input amplitude (mm)")
-    ax.set_ylabel("5% settling time about final value (ms)")
-    ax.set_title("Critical-damping gains: settling time versus step amplitude")
+    ax.set_xlabel("Step input amplitude (mm)", fontsize=LABEL_FONTSIZE)
+    ax.set_ylabel("5% settling time about final value (ms)", fontsize=LABEL_FONTSIZE)
+    ax.set_title("settling time versus step amplitude", fontsize=TITLE_FONTSIZE)
     ax.grid(True, alpha=0.25)
-    ax.set_xlim(15.0, 25.0)
-    ax.set_ylim(160.0, 200.0)
-    ax.legend(loc="lower left", fontsize=8.5)
+    ax.set_xlim(PLOT_STEP_MIN_MM, PLOT_STEP_MAX_MM)
+    ax.set_ylim(160.0, 210.0)
+    _style_axes(ax)
+    ax.legend(loc="lower left", fontsize=LEGEND_FONTSIZE)
     fig.tight_layout()
 
     out = RESULTS_DIR / "exp3_critical_step_settling.png"
@@ -257,10 +267,12 @@ def plot_settling(cases: list[Case], ideal_ts: float, boundary: float) -> Path:
 
 
 def plot_representatives(representatives: tuple[Case, Case, Case], ideal_ts: float) -> Path:
-    labels = ["Stable response", "Nonlinear response", "Divergent response"]
-    fig, axes = plt.subplots(1, 3, figsize=(14.0, 4.3))
+    labels = [r"$\Delta r = 12$ mm", r"$\Delta r = 19$ mm", r"$\Delta r = 22$ mm"]
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+    fig, ax = plt.subplots(figsize=(8.0, 6.0))
 
-    for ax, case, label in zip(axes, representatives, labels):
+    max_end_time_ms = 0.0
+    for case, label, color in zip(representatives, labels, colors):
         # Stop a failed trace shortly after contact with a mechanical rail so
         # the plot shows the loss of levitation without a long flat tail.
         end = len(case.t)
@@ -272,26 +284,24 @@ def plot_representatives(representatives: tuple[Case, Case, Case], ideal_ts: flo
             if len(hit):
                 end = min(len(case.t), int(hit[0]) + 60)
 
-        ax.plot(1000.0 * case.t[:end], 1000.0 * case.r[:end], "r--", lw=1.7,
-                label="Reference")
-        ax.plot(1000.0 * case.t[:end], 1000.0 * case.y[:end], color="tab:blue",
-                lw=1.8, label="Actual position")
-        ax.axvline(0.0, color="0.5", ls=":", lw=1.0)
-        ax.set_xlabel("Time from step (ms)")
-        ax.set_ylabel("Gap y (mm)")
-        if case.unstable:
-            subtitle = f"{label}\nstep={case.step_mm:.2f} mm; {case.failure_reason}"
-        else:
-            subtitle = (
-                f"{label}\nstep={case.step_mm:.2f} mm, "
-                f"ts={1000.0 * case.settling_time_s:.0f} ms "
-                f"(ideal {1000.0 * ideal_ts:.0f} ms)"
-            )
-        ax.set_title(subtitle, fontsize=10)
-        ax.grid(True, alpha=0.25)
-        ax.legend(fontsize=8, loc="best")
+        step = case.step_mm / 1000.0
+        y_norm = (case.y[:end] - params.OP.y0) / step
+        time_ms = 1000.0 * case.t[:end]
+        max_end_time_ms = max(max_end_time_ms, float(time_ms[-1]))
+        ax.plot(time_ms, y_norm, color=color, lw=1.9, label=label)
 
-    fig.suptitle("Representative responses using linear-model critical-damping gains")
+    ax.plot([-50.0, 0.0, 0.0, max_end_time_ms], [0.0, 0.0, 1.0, 1.0],
+            "r--", lw=1.7, label="Normalized reference")
+    ax.axvline(0.0, color="0.5", ls=":", lw=1.0)
+    ax.set_xlabel("Time (ms)", fontsize=LABEL_FONTSIZE)
+    ax.set_ylabel("Normalized gap change (y-y0)/step", fontsize=LABEL_FONTSIZE)
+    ax.set_xlim(0.0, 1000.0)
+    ax.set_ylim(*REPRESENTATIVE_Y_LIM)
+    ax.set_title("Representative normalized step responses", fontsize=TITLE_FONTSIZE)
+    ax.grid(True, alpha=0.25)
+    _style_axes(ax)
+    ax.legend(fontsize=LEGEND_FONTSIZE, loc="best")
+
     fig.tight_layout()
     out = RESULTS_DIR / "exp3_representative_responses.png"
     fig.savefig(out, dpi=180)
@@ -310,20 +320,22 @@ def plot_steady_state_error(cases: list[Case], boundary: float) -> Path:
         for case in stable
     ])
 
-    fig, ax = plt.subplots(figsize=(8.2, 4.8))
+    fig, ax = plt.subplots(figsize=(8.0, 6.0))
     ax.plot(all_steps, ideal_error, "k--", lw=1.7,
             label="Ideal linear plant prediction")
     ax.plot([case.step_mm for case in stable], nonlinear_error,
             color="tab:blue", lw=1.8, label="Nonlinear simulation")
-    ax.axvspan(boundary, 25.0, color="red", alpha=0.10,
-               label="Unstable: no steady state")
-    ax.axvline(boundary, color="red", ls=":", lw=1.2)
-    ax.set_xlabel("Step input amplitude (mm)")
-    ax.set_ylabel("Steady-state error magnitude |y_ss - r| (mm)")
-    ax.set_title("Steady-state tracking error versus step amplitude")
-    ax.set_xlim(15.0, 25.0)
+    if boundary < PLOT_STEP_MAX_MM:
+        ax.axvspan(boundary, PLOT_STEP_MAX_MM, color="red", alpha=0.10,
+                   label="Unstable: no steady state")
+        ax.axvline(boundary, color="red", ls=":", lw=1.2)
+    ax.set_xlabel("Step input amplitude (mm)", fontsize=LABEL_FONTSIZE)
+    ax.set_ylabel("Steady-state error magnitude |y_ss - r| (mm)", fontsize=LABEL_FONTSIZE)
+    ax.set_title("Steady-state tracking error versus step amplitude", fontsize=TITLE_FONTSIZE)
+    ax.set_xlim(PLOT_STEP_MIN_MM, PLOT_STEP_MAX_MM)
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="upper left", fontsize=8.5)
+    _style_axes(ax)
+    ax.legend(loc="upper left", fontsize=LEGEND_FONTSIZE)
     fig.tight_layout()
 
     out = RESULTS_DIR / "exp3_steady_state_error.png"
