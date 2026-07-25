@@ -33,10 +33,14 @@ static const uint8_t PIN_BRAKE = 7;   // BRAKE, active-high; held LOW to run
 static const uint8_t HALL_PIN  = A0;  // SS49EUA analog output
 
 // --- PD gains + setpoint, in PWM-count / millimetre units. All live-tunable. ---
-static float g_Kp     = 16.0f;    // duty per mm of gap error    -- TUNE
-static float g_Kd     = 0.3f;   // duty per (mm/s) of gap rate -- TUNE
+static float g_Kp     = 15.8f;    // duty per mm of gap error    -- TUNE
+static float g_Kd     = 0.2f;   // duty per (mm/s) of gap rate -- TUNE
 static float g_ref_mm = 30.0f;   // reference gap (mm), 'R' command; keep in [22,49]
-static float PWM_BIAS = 155.0f;  // nominal hover duty; 'BIAS' command, TUNE
+static float PWM_BIAS = 149.0f;  // nominal hover duty; 'BIAS' command, TUNE
+
+// Step input: sending 's' adds this to the reference gap. Negative is allowed.
+// Send "R 30" to go back. The response is the existing 50 Hz telemetry stream.
+static const float STEP_AMP_MM = 0.30f;   // step amplitude (mm)  -- SET THIS
 
 // --- Calibration constants (from calibrate_coil / calibrate_PM fits) ---
 //   dB_coil(u) = c3*u^3 + c2*u^2 + c1*u        (mV; ~ -1.03*u, coil pulls Hall down)
@@ -142,6 +146,13 @@ static void handle(char *line) {
 static void pollSerial() {
   while (Serial.available() > 0) {
     char ch = (char)Serial.read();
+    // Bare 's' steps the reference immediately. No number is printed here on
+    // purpose: printing a float costs ~150 us and this loop has no budget spare.
+    if (g_len == 0 && (ch == 's' || ch == 'S')) {
+      g_ref_mm += STEP_AMP_MM;
+      Serial.println(F("===== STEP ====="));
+      continue;
+    }
     if (ch == '\n' || ch == '\r') { if (g_len) { g_buf[g_len] = '\0'; handle(g_buf); g_len = 0; } }
     else if (g_len < sizeof(g_buf) - 1) g_buf[g_len++] = ch;
   }

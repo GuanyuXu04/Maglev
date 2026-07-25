@@ -1,0 +1,71 @@
+kp,kd,stable,n_pre,n_post,note,file
+12.00,0.15,N,0,0,user: not stable,
+12.00,0.20,N,0,0,user: not stable,
+12.00,0.25,N,0,0,user: not stable,
+12.00,0.30,N,0,0,user: not stable,
+12.00,0.35,N,0,0,user: not stable,
+12.00,0.40,skip,0,0,user skipped,
+12.00,0.45,skip,0,0,user skipped,
+13.00,0.15,N,0,0,user: not stable,
+13.00,0.20,N,0,0,user: not stable,
+13.00,0.25,N,0,0,user: not stable,
+13.00,0.30,N,0,0,user: not stable,
+13.00,0.35,N,0,0,user: not stable,
+13.00,0.40,N,0,0,user: not stable,
+13.00,0.45,N,0,0,user: not stable,
+14.00,0.15,N,0,0,user: not stable,
+14.00,0.20,N,0,0,user: not stable,
+14.00,0.25,N,0,0,user: not stable,
+14.00,0.30,Y,200,1000,,step_kp14.0_kd0.30.csv
+14.00,0.35,Y,200,1000,,step_kp14.0_kd0.35.csv
+14.00,0.40,N,0,0,user: not stable,
+14.00,0.45,N,0,0,user: not stable,
+14.50,0.15,N,0,0,user: not stable,
+14.50,0.20,N,0,0,user: not stable,
+14.50,0.25,N,0,0,user: not stable,
+14.50,0.30,Y,200,1000,,step_kp14.5_kd0.30.csv
+14.50,0.35,Y,200,1000,,step_kp14.5_kd0.35.csv
+14.50,0.40,Y,200,1000,,step_kp14.5_kd0.40.csv
+14.50,0.45,Y,200,1000,,step_kp14.5_kd0.45.csv
+15.00,0.15,N,0,0,user: not stable,
+15.00,0.20,Y,200,1000,,step_kp15.0_kd0.20.csv
+15.00,0.25,Y,200,1000,,step_kp15.0_kd0.25.csv
+15.00,0.30,Y,200,1000,,step_kp15.0_kd0.30.csv
+15.00,0.35,Y,200,1000,,step_kp15.0_kd0.35.csv
+15.00,0.40,Y,200,1000,,step_kp15.0_kd0.40.csv
+15.00,0.45,Y,200,1000,,step_kp15.0_kd0.45.csv
+15.30,0.15,N,0,0,user: not stable,
+15.30,0.20,Y,200,1000,,step_kp15.3_kd0.20.csv
+15.30,0.25,Y,200,1000,,step_kp15.3_kd0.25.csv
+15.30,0.30,Y,200,1000,,step_kp15.3_kd0.30.csv
+15.30,0.35,Y,200,1000,,step_kp15.3_kd0.35.csv
+15.30,0.40,Y,200,1000,,step_kp15.3_kd0.40.csv
+15.30,0.45,N,0,0,user: not stable,
+15.50,0.15,Y,200,1000,,step_kp15.5_kd0.15.csv
+15.50,0.20,Y,200,1000,,step_kp15.5_kd0.20.csv
+15.50,0.25,Y,200,1000,,step_kp15.5_kd0.25.csv
+15.50,0.30,Y,200,1000,,step_kp15.5_kd0.30.csv
+15.50,0.35,Y,200,1000,,step_kp15.5_kd0.35.csv
+15.50,0.40,Y,200,1000,,step_kp15.5_kd0.40.csv
+15.50,0.45,N,0,0,user: not stable,
+15.80,0.15,Y,200,1000,,step_kp15.8_kd0.15.csv
+15.80,0.20,Y,200,1000,,step_kp15.8_kd0.20.csv
+15.80,0.25,Y,200,1000,,step_kp15.8_kd0.25.csv
+15.80,0.30,Y,200,1000,,step_kp15.8_kd0.30.csv
+15.80,0.35,Y,200,1000,,step_kp15.8_kd0.35.csv
+15.80,0.40,N,0,0,user: not stable,
+15.80,0.45,N,0,0,user: not stable,
+15.90,0.15,skip,0,0,user skipped,
+15.90,0.20,skip,0,0,user skipped,
+15.90,0.25,skip,0,0,user skipped,
+15.90,0.30,skip,0,0,user skipped,
+15.90,0.35,skip,0,0,user skipped,
+15.90,0.40,skip,0,0,user skipped,
+15.90,0.45,skip,0,0,user skipped,
+16.00,0.15,Y,200,1000,,step_kp16.0_kd0.15.csv
+16.00,0.20,Y,200,1000,,step_kp16.0_kd0.20.csv
+16.00,0.25,Y,200,1000,,step_kp16.0_kd0.25.csv
+16.00,0.30,Y,200,1000,,step_kp16.0_kd0.30.csv
+16.00,0.35,Y,200,1000,,step_kp16.0_kd0.35.csv
+16.00,0.40,N,0,0,user: not stable,
+16.00,0.45,skip,0,0,user skipped,
