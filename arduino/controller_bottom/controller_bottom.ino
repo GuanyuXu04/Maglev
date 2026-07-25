@@ -1,5 +1,5 @@
 /*
- * Maglev PD controller -- setup (1): VL53L1X sits on the TABLE and ranges
+ * Maglev PD controller -- setup (1): VL53L0X sits on the TABLE and ranges
  * UPWARD at the underside of the floating magnet, so its reading is (H - y):
  *
  *      H = table-to-coil-face distance   (found once by calibration)
@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <Wire.h>
-#include <VL53L1X.h>
+#include <VL53L0X.h>
 
 // --- Hardware: LMD18200 coil driver. A coil only ever attracts, so DIRECTION
 // is fixed and we drive a single unipolar PWM duty (0..255). ---
@@ -38,7 +38,7 @@ static const float TAU_D    = 0.020f; // s, derivative low-pass
 static float g_H_mm = 450.0f;    // overwritten by calibrate()
 
 // --- Runtime state ---
-VL53L1X sensor;
+VL53L0X sensor;
 static bool  g_have  = false;    // false until the filters are seeded
 static float g_yFilt = 0.0f, g_yPrev = 0.0f, g_ydot = 0.0f;
 static unsigned long g_lastUs = 0;
@@ -47,17 +47,19 @@ static int   g_duty = 0;
 static char    g_buf[48];        // serial line buffer
 static uint8_t g_len = 0;
 
-// One fresh, valid gap y (mm) since the last poll, or false if none.
-// The VL53L1X returns a number plus a status even when it cannot see the
-// target, so the status must be checked -- a garbage reading fed to the D-term
-// produces a huge false velocity.
+// One fresh, valid gap y (mm), or false if the reading is unusable. Unlike the
+// VL53L1X, the Pololu VL53L0X library exposes no dataReady()/range_status: a
+// continuous read blocks until the next measurement is ready and signals failure
+// only through timeoutOccurred() (it returns 65535). When it loses the target it
+// simply returns a large distance. So validity is enforced by the numeric gap
+// gate below, which rejects both the 65535 timeout marker (y = H - 65535 < 0)
+// and a lost-target reading before either can reach the D-term as a huge false
+// velocity.
 static bool readGap(float *raw_mm, float *y_mm) {
-  if (!sensor.dataReady()) return false;
-  uint16_t mm = sensor.read(false);
+  uint16_t mm = sensor.readRangeContinuousMillimeters();
   if (sensor.timeoutOccurred()) return false;
-  if (sensor.ranging_data.range_status != VL53L1X::RangeValid) return false;
   float y = g_H_mm - (float)mm;                 // reading = H - y  =>  y = H - reading
-  if (y < 1.0f || y > 200.0f) return false;     // magnet out of range / gone
+  if (y < 1.0f || y > 200.0f) return false;     // magnet out of range / gone / timeout marker
   *raw_mm = (float)mm;
   *y_mm = y;
   return true;
@@ -124,10 +126,8 @@ static void calibrate() {
   static uint16_t s[500];
   int n = 0;
   while (n < 500) {
-    if (!sensor.dataReady()) continue;
-    uint16_t mm = sensor.read(false);
+    uint16_t mm = sensor.readRangeContinuousMillimeters();  // blocks until ready
     if (sensor.timeoutOccurred()) continue;
-    if (sensor.ranging_data.range_status != VL53L1X::RangeValid) continue;
     s[n++] = mm;
   }
   qsort(s, 500, sizeof(uint16_t), cmp16);
@@ -149,8 +149,16 @@ void setup() {
   Wire.begin();
   Wire.setClock(400000);
   sensor.setTimeout(500);
-  if (!sensor.init()) { Serial.println(F("VL53L1X init FAILED")); while (1) {} }
-  sensor.setDistanceMode(VL53L1X::Long);   // H can be ~0.5 m up to the coil face
+  if (!sensor.init()) { Serial.println(F("VL53L0X init FAILED")); while (1) {} }
+  // Long-range profile: H can be ~0.5 m up to the coil face, past the VL53L0X
+  // default reach against a small target. The VL53L0X has no distance-mode enum,
+  // so long range is configured explicitly with Pololu's documented recipe --
+  // lower the return-signal-rate limit and lengthen the VCSEL pulse periods.
+  // Set these BEFORE the timing budget, which they influence. 20 ms budget +
+  // 25 ms period keep the sample cadence (~40 Hz) identical to the original.
+  sensor.setSignalRateLimit(0.1);
+  sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodPreRange, 18);
+  sensor.setVcselPulsePeriod(VL53L0X::VcselPeriodFinalRange, 14);
   sensor.setMeasurementTimingBudget(20000);
   sensor.startContinuous(25);
 
