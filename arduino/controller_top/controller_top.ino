@@ -33,8 +33,8 @@ static const uint8_t PIN_BRAKE = 7;   // BRAKE, active-high; held LOW to run
 static const uint8_t HALL_PIN  = A0;  // SS49EUA analog output
 
 // --- PD gains + setpoint, in PWM-count / millimetre units. All live-tunable. ---
-static float g_Kp     = 16.05f;    // duty per mm of gap error    -- TUNE
-static float g_Kd     = 1.0f;   // duty per (mm/s) of gap rate -- TUNE
+static float g_Kp     = 16.0f;    // duty per mm of gap error    -- TUNE
+static float g_Kd     = 0.3f;   // duty per (mm/s) of gap rate -- TUNE
 static float g_ref_mm = 30.0f;   // reference gap (mm), 'R' command; keep in [22,49]
 static float PWM_BIAS = 155.0f;  // nominal hover duty; 'BIAS' command, TUNE
 
@@ -52,8 +52,8 @@ static const float HALL_PM_LO = 2015.0f, HALL_PM_HI = 2490.0f; // valid Hall ban
 static const float NO_TARGET_MV = 2495.0f;   // hall_pm above this => magnet gone
 
 // --- Loop timing / filters ---
-static const uint32_t T_S_US   = 1000;    // 1 kHz control step
-static const float    DT       = 1.0e-3f; // s, matches T_S_US
+static const uint32_t T_S_US   = 1250;    // 1 kHz control step
+static const float    DT       = 1.25e-3f; // s, matches T_S_US
 static const uint16_t HALL_AVG = 64;      // fast ADC reads averaged per step
 static const float TAU_MEAS = 0.004f;     // s, position measurement low-pass
 static const float TAU_D    = 0.0145f;     // s, derivative low-pass
