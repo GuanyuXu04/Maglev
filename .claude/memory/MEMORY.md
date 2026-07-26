@@ -1,0 +1,3 @@
+- [Maglev Hall sensing constraints](maglev-hall-sensing-constraints.md) — why ToF was dropped (p·τ≈0.9), the two Hall calibration curves, and the ±4.7 mm tilt-limited accuracy
+- [Coil-correction positive feedback](maglev-coil-correction-positive-feedback.md) — the dB_coil subtraction destabilizes at gain>1 during transients; also the cubic gap map's blind spot at 25 mm
+- [Maglev data collection pipeline](maglev-data-collection-pipeline.md) — rig hardware/serial commands, CSV step-capture format, and the filter/recenter/steady-state-error processing pipeline
